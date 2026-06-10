@@ -10,6 +10,10 @@ test.ipynb
 *.nc
 *.png
 input/
+data
+results
+output
+outputs
 
 # Output directories
 weather_nc/
