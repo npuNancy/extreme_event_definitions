@@ -7,68 +7,157 @@
 ```
 extreme_event_definitions/
   README.md
-  registry.py              # 汇总注册表: simple_signals() 一次取全部
-  common.py                # 低资源共享算法(24h滚动+clim288+P5, 太阳高度角)
-  weather_loaders.py       # ★ ERA5-Land + MERRA-2 数据调用 -> weather 字典
-  events/
-    wind_low_resource.py     风电 低资源   24h资源距平<=P5
-    wind_icing.py            风电 结冰     temp_C<-2 & rh_pct>=85 (与光伏统一阈值)
-    wind_high_temp.py        风电 高温     temp_C>35           (最弱损失,净22%,参考)
-    wind_hot_humid.py        风电 高温高湿 temp_C>30 & rh_pct>=85
-    wind_high_wind.py        风电 大风     wind_ms>17 (10m)
-    solar_low_resource.py    光伏 低资源   24h辐照距平<=P5(夜间置0)
-    solar_freezing_rain.py   光伏 冻雨     temp_C<3 & precip_mmh>0
-    solar_icing.py           光伏 结冰     temp_C<-2 & rh_pct>=85 (比风电更冷,0℃附近是增益)
-    solar_dust.py            光伏 沙尘     dust_aod>0.4
-    solar_rainstorm.py       光伏 暴雨     precip_mmh>2
-    solar_high_humidity.py   光伏 高湿度   rh_pct>=95
-    solar_cold_highwind.py   光伏 低温大风 temp_C<5 & wind_ms>8
+  registry.py                              # 汇总注册表: simple_signals() 一次取全部
+  common.py                                # 低资源共享算法(24h滚动+clim288+P5, 太阳高度角)
+  events/                                  # 共享事件定义 (每个事件一个文件)
+  legacy_station_pipeline/                 # 旧的真实场站流程 (已迁移)
+    weather_loaders.py                       # ERA5-Land + MERRA-2 数据调用
+    global_extreme_simple_signals.py         # 全球场站一步到位
+    extract_station_weather_nc.py            # 场站天气抽取
+    generate_extreme_signals.py              # 从天气 NC 生成信号
+    compute_lowres_baseline.py               # 低资源基线计算
+  grid_extreme_signals/                    # 新增：多数据源网格信号流程
+    adapters/
+      base.py                                # WeatherBundle / WeatherAdapter 接口
+      regional_bcsd.py                       # CMIP6–ERA5Land BCSD 适配器
+      china_cmfd_bcsd.py                     # CMIP6–CMFD BCSD 适配器
+      cordex_nam12.py                        # CORDEX NAM-12 适配器 (旋转极网格)
+      era5land_raw.py                        # ERA5-Land 原始数据适配器 (反累积)
+    io_utils.py                              # 文件发现、变量名解析、原子写入
+    time_alignment.py                        # 时间轴插值、cftime 支持
+    unit_conversion.py                       # 单位转换
+    signal_runner.py                         # 核心流程：加载→标准化→检测→写入
+  scripts/
+    generate_multi_source_grid_signals.py  # 统一 CLI 入口
+  tests/                                    # 单元测试
+  document/                                # 文档
 ```
-**改阈值**：打开对应 `events/xxx.py`，改文件顶部 `====阈值====` 区的常量即可。
+
+## 四类数据源
+
+| `--source` | 数据名称 | 空间网格 | 时间分辨率 | 输出粒度 |
+|---|---|---|---|---|
+| `regional_bcsd` | CMIP6–ERA5Land BCSD | 规则经纬度 ~0.1° | 3 小时 | 按年 |
+| `china_cmfd_bcsd` | CMIP6–CMFD BCSD | 规则经纬度 ~0.1° | 3 小时 | 按年 |
+| `cordex_nam12` | CMIP6–CORDEX NAM-12 | 旋转极网格 `rlat × rlon` | 逐小时 | 按年 |
+| `era5land_raw` | ERA5-Land 原始 | 规则经纬度 ~0.1° | 逐小时 | 按月 |
+
+### 各数据源可用信号
+
+| 信号 | regional_bcsd | china_cmfd_bcsd | cordex_nam12 | era5land_raw |
+|---|:---:|:---:|:---:|:---:|
+| **风电** | | | | |
+| signal_high_temp | ✅ | ✅ | ✅ | ✅ |
+| signal_high_wind | ✅ | ✅ | ✅ | ✅ |
+| signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_hot_humid | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| **光伏** | | | | |
+| signal_freezing_rain | ✅ | ✅* | ✅* | ✅ |
+| signal_rainstorm | ✅ | ✅* | ✅* | ✅ |
+| signal_cold_highwind | ✅ | ✅ | ✅ | ✅ |
+| signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_high_humidity | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_dust | ❌ | ❌ | ❌ | ✅* 需 --dust_dir |
+| signal_low_resource | 第一阶段暂缓 | 第一阶段暂缓 | 第一阶段暂缓 | 第一阶段暂缓 |
+
+✅* = 需要 pr 文件或额外参数；❌ = 因缺少输入变量被跳过
+
+### 跳过事件的原因
+
+当数据源缺少某个事件所需的输入变量时，该事件不会出现在输出文件中。输出文件属性 `skipped_events` 和 `skipped_event_reasons` 记录了所有跳过事件及其原因。
+
+## 运行示例
+
+### 1. Regional BCSD（多数区域/国家）
+```bash
+python scripts/generate_multi_source_grid_signals.py \
+  --source regional_bcsd \
+  --data_dir data/bcsd_outputs \
+  --model MIROC-ES2H \
+  --region Austria \
+  --scenario ssp126 \
+  --years 2015-2060
+```
+
+支持 `--region all` 遍历所有有效区域。
+
+### 2. China CMFD BCSD（中国区域）
+```bash
+python scripts/generate_multi_source_grid_signals.py \
+  --source china_cmfd_bcsd \
+  --data_dir data/cmip6_downscaling_3hr \
+  --model MIROC-ES2H \
+  --scenario ssp126 \
+  --years 2015-2100
+```
+
+### 3. CORDEX NAM-12（北美 12km）
+```bash
+python scripts/generate_multi_source_grid_signals.py \
+  --source cordex_nam12 \
+  --data_dir data/CORDEX-CMIP6/NAM-12/1hr \
+  --gcm_model MPI-ESM1-2-LR \
+  --realization r1i1p1f1 \
+  --rcm_model CRCM5 \
+  --scenario ssp126 \
+  --years 2020-2060
+```
+
+### 4. ERA5-Land（原始全球数据）
+```bash
+python scripts/generate_multi_source_grid_signals.py \
+  --source era5land_raw \
+  --data_dir data \
+  --years 2024 \
+  --months 1,2
+```
+
+## 重要参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--save_weather` | `False` | 不保存 `weather_*.nc` 中间文件；仅生成信号 |
+| `--stations_dir` | `None` | **预留参数**：非空时抛出 `NotImplementedError`（第一阶段未实现场站筛选） |
+| `--require_events` | 空 | 显式要求必须生成的事件；缺失输入时报错 |
+| `--overwrite` | `False` | 覆盖已有输出 |
+| `--dry_run` | `False` | 仅打印任务计划 |
+
+### 天气中间文件
+
+默认不保存标准化天气变量。传入 `--save_weather` 后，会在 `weather/` 目录额外写出 `weather_wind_*.nc` 和 `weather_solar_*.nc` 文件，用于调试单位转换、检查时间轴对齐或复用中间结果。
+
+### 场站筛选（预留）
+
+`--stations_dir` 参数已预留但第一阶段未实现。传入非空值时会抛出 `NotImplementedError`。场站筛选将在后续阶段实现，届时需要明确不同空间结构间的映射规则。
+
+## 注意事项
+
+1. **3 小时数据与逐小时数据的暴露率不能直接比较**：BCSD/CMFD/CORDEX 数据的时间分辨率不同，极端事件的暴露小时数不能跨分辨率直接比较。
+2. **NAM-12 使用旋转极网格**：输出维度为 `(time, rlat, rlon)`，保留二维 `lat(rlat, rlon)` 和 `lon(rlat, rlon)` 辅助坐标。
+3. **ERA5-Land 累积量需要跨月边界反累积**：`tp` 和 `ssrd` 是日内累积量，在月初 00:00 需要读取前月最后一小时作为差分起点。
+4. **低资源事件暂缓**：不同来源时间分辨率不同（3h vs 1h），低资源事件的基线和阈值需要进一步明确。
+5. **旧真实场站脚本已迁移到 `legacy_station_pipeline/`**：推荐使用 `python -m legacy_station_pipeline.xxx` 运行。
+6. **默认仅写出 `extreme_signals_*.nc`**：只有显式传入 `--save_weather` 才保存 `weather_*.nc`。
 
 ## 变量约定（weather 字典；单位/高度务必一致）
 | 键 | 含义 | 单位 | 高度/来源 |
 |---|---|---|---|
-| temp_C | 气温 | °C | 2m (t2m−273.15) |
+| temp_C | 气温 | °C | 2m (t2m−273.15) 或 tas |
 | rh_pct | 相对湿度 | % | 2m (Magnus: t2m+d2m) |
-| wind_ms | 风速 | m/s | 10m (√(u10²+v10²)) |
-| precip_mmh | 降水 | mm/h | tp 去累积 |
+| wind_ms | 风速 | m/s | 10m (√(u10²+v10²)) 或 sfcWind |
+| precip_mmh | 降水 | mm/h | pr 转换 或 tp 去累积 |
+| rsds | 短波辐射 | W/m² | rsds 或 ssrd 去累积 |
 | dust_aod | 沙尘AOD | 1 | MERRA-2 DUEXTTAU |
-| (resource) | 资源 | — | 仅低资源: 风=wind_ms, 光=辐照rsds |
-
-数据形状统一 `(time, station)`；不插补，NaN→事件 False。
-
-## 用法
-```python
-# 1) 准备 weather 字典(三选一, 见 weather_loaders.py)
-from weather_loaders import load_covariates
-weather, time, lat, lon = load_covariates("covariates_2024.nc")   # 最省事
-
-# 2) 简单阈值事件
-from registry import simple_signals
-masks = simple_signals("solar", weather)     # {name:(T,K) bool}
-
-# 3) 低资源(需资源时序)
-from events import solar_low_resource, wind_low_resource
-lr_s = solar_low_resource.signal(rsds, time, lat, lon, base_mask=base_1987_2016)
-lr_w = wind_low_resource.signal(wind10m, time, base_mask=base_1987_2016)
-```
-
-## 数据调用（ERA5-Land + MERRA-2）—— 见 `weather_loaders.py`
-- **入口A** `load_covariates(nc)`：读现成 `covariates_{year}.nc`（最省事）。
-- **入口B** `build_from_extracted(root,year)`：从 ERA5-Land 站点抽取 `extracted/{var}/` + MERRA-2 沙尘组装。
-- **入口C** 从零：原始 ERA5-Land 全球月文件 → 用权威脚本
-  `extreme_signals_pipeline/pipeline/extract.py`（含 tp/ssrd **去累积** hour==1 规则）
-  → `build_covariates.py`（RH + 沙尘）。
-
-数据源（Spark02）：
-- ERA5-Land：`/data1/luobaozhen/era5_download/ERA5_land/global/{u10,v10,t2m,tp,ssrd,d2t}/{var}_{YYYY}_{MM}.nc`
-- MERRA-2：`/data3/luobaozhen/MERRA2/M2T1NXAER/DUEXTTAU/{YYYY}/{MM}/MERRA2.tavg1_2d_aer_Nx.{YYYYMMDD}.nc4`
 
 ## 阈值标定来源
 真实场站口径结果：`real_station_analysis_lbz/analysis/event_eval/real_events_table_*.csv`；
 指标定义：`real_station_analysis_lbz/整理/METRICS.md`（加权损失方向率/净损失率/暴露率）。
 
-## 注意
-- **低资源**最特殊：基线期固定 1987-2016（逐年可比）；光伏务必传夜间过滤（solar_low_resource 内部按太阳高度角处理）。
-- **高温**(风电)为最弱净损失(仅22%,接近中性)、**大风**(10m)极罕见且切出需轮毂高度——见各文件内注释。
+## 旧真实场站流程
+
+旧脚本继续服务于 ERA5-Land / MERRA-2 + 真实场站 CSV 或 GPKG 的流程，但已迁移到 `legacy_station_pipeline/`。运行方式：
+
+```bash
+python -m legacy_station_pipeline.generate_extreme_signals --weather_nc weather.nc ...
+python -m legacy_station_pipeline.global_extreme_simple_signals ...
+```

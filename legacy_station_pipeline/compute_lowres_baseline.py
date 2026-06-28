@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import common
 
 ES = "/data1/luobaozhen/extreme_signals"
@@ -64,8 +64,8 @@ def fill_resource(root, tech, years, want, canon, res, colmap):
 
 def fill_raw(tech, miss, sub, idc, years, canon, res, colmap):
     """对 extracted 中缺失的站, 从原始全球 ERA5-Land 补抽基线资源, 填入 res。按国家分区切 bbox。"""
-    import weather_loaders as wl
-    from extract_station_weather_nc import gather_var, _align
+    import legacy_station_pipeline.weather_loaders as wl
+    from legacy_station_pipeline.extract_station_weather_nc import gather_var, _align
     mm = sub[sub[idc].astype(str).isin(miss)].copy()
     mm["_sid"] = mm[idc].astype(str)
     lat = pd.to_numeric(mm["lat"], errors="coerce").to_numpy(float)

@@ -26,11 +26,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import registry
-import weather_loaders as wl
+import legacy_station_pipeline.weather_loaders as wl
 
 
 ERA5_ROOTS = {
