@@ -112,6 +112,38 @@ python scripts/generate_multi_source_grid_signals.py \
   --months 1,2
 ```
 
+## 场站级信号（Pipeline A / Pipeline B）
+
+场站选址结果已是 **0.1°（≈10km）级别**（`data/stations/stations_SSP*.csv`，全球范围）。我们只对**有气象数据的国家**（BCSD 26 国 + China + NAM-12）范围内的场站计算极端天气信号。两条独立 pipeline（各自一个脚本）：
+
+- **Pipeline B（直接场站，推荐）** `scripts/station_signals_direct.py`：跳过网格，复用适配器标准化气象 → 最近邻 gather 到场站 → `registry.simple_signals` 检测 → 写场站级信号。效率最高。
+- **Pipeline A（网格→场站）** `scripts/station_signals_from_grid.py`：先跑/复用第一阶段网格信号（`--run_phase1` 或 `--grid_signals_dir`）→ 把布尔掩码 gather 到场站。会计算所有格点，但同时留有网格结果。
+
+两者产出**相同 schema 的场站级 NetCDF**（`dims: time, station`；`signal_<event>(time,station)` + 场站元数据），且对同一输入**逐位一致**（已校验）。
+
+### 匹配与经度（关键）
+- 场站经度统一 `[-180,180)`；**BCSD 网格经度约定逐区域不同**（Germany 5–15 像 `[-180,180]`，Portugal 存为 `328.7–353.7` 即 `[0,360)`）——脚本**逐文件检测并归一**后再做最近邻。
+- 最近邻用环形经度距离（正确处理 ±180° 缝合）；距离容差 `--max_dist` 默认 `0.15°`，超容差场站信号置 0。
+- 场站→国家：Natural Earth 国界多边形 point-in-polygon（`--shp`）；`(lon,lat,type)` 去重，`activation_year=min(year)`。
+- 场站激活年前的信号默认置 0（`--no_activation_mask` 关闭）。
+
+### 运行示例（regional_bcsd）
+```bash
+# Pipeline B：直接场站信号
+python scripts/station_signals_direct.py \
+  --source regional_bcsd --data_dir data/bcsd_outputs \
+  --model MIROC-ES2H --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --region all --years 2015-2050 --allow_unit_inference
+
+# Pipeline A：先生成网格信号再抽取到场站
+python scripts/station_signals_from_grid.py \
+  --source regional_bcsd --data_dir data/bcsd_outputs \
+  --model MIROC-ES2H --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --region Germany --years 2030 --run_phase1 --allow_unit_inference
+```
+
+> China(CMFD) / NAM-12(CORDEX) 的匹配逻辑已在共享模块就绪（规则网 / 2D 旋转极），待数据落盘后启用。详见 `document/场站级信号_实施计划.md`。
+
 ## 重要参数
 
 | 参数 | 默认值 | 说明 |
@@ -148,7 +180,7 @@ python scripts/generate_multi_source_grid_signals.py \
 
 | 待办 | 卡点 |
 |---|---|
-| **场站筛选**（`--stations_dir`） | 需先敲定 1° 场站 ↔ 0.1°/旋转极网格的映射/聚合规则（最近邻 / 区域平均 / 聚合 / 保留全部格点） |
+| **场站级信号**（`station_signals_*.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
 | **低资源事件**（`signal_low_resource`） | 3h 与 1h 时间分辨率不可比；需先明确 24h 滚动如何近似、"向后扩 1h"在 3h 数据中如何定义、基线期来源、跨源可比性 |
 | **MERRA-2 沙尘全网格重采样** | 第一阶段只做简单最近邻 |
 | **跨区域拼接** | — |

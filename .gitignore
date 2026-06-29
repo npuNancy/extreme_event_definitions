@@ -10,11 +10,14 @@ test.ipynb
 *.nc
 *.png
 input/
-data
+data/*
+!data/grid_of_regions
 results
 output
 outputs
 ref_code
+
+run_*.sh
 
 # Output directories
 weather_nc/
