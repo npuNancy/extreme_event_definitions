@@ -46,6 +46,19 @@ from grid_extreme_signals.unit_conversion import (
 logger = logging.getLogger(__name__)
 
 
+def _regional_bcsd_pr_units(units: str | None) -> str | None:
+    """Return the precipitation unit for regional BCSD outputs.
+
+    Step 6 BCSD files may drop the ``units`` attribute, but ``pr_bcsd`` values
+    are precipitation fluxes produced as kg m-2 s-1 (equivalent to mm s-1).
+    """
+    if isinstance(units, bytes):
+        units = units.decode("utf-8")
+    if units is None or str(units).strip() == "":
+        return "kg m-2 s-1"
+    return units
+
+
 class RegionalBcsdAdapter(WeatherAdapter):
     """Adapter for regional CMIP6–ERA5Land BCSD data."""
 
@@ -341,7 +354,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
                     "Check your input data or provide matching time axes."
                 )
             precip_mmh = pr_to_mmh(
-                pr_da.values, pr_units,
+                pr_da.values, _regional_bcsd_pr_units(pr_units),
                 timestep_hours=3.0,
                 allow_inference=self.allow_unit_inference,
             )
