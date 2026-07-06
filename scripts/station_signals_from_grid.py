@@ -1,31 +1,24 @@
 #!/usr/bin/env python3
-"""Pipeline A — grid-then-station extreme weather signal generation.
+"""流程 A：先生成网格信号，再抽取场站级极端天气信号。
 
-Two-step approach:
+两步流程：
 
-  1. (Phase 1) generate full-grid extreme-weather signals for the requested
-     regions/years via the existing Phase-1 runner — exactly what
-     ``scripts/generate_multi_source_grid_signals.py`` produces.  If the grid
-     signal files already exist, this step is skipped (reuse via
-     ``--grid_signals_dir``).
-  2. (Phase 2) read each grid signal NetCDF, match the in-country stations to
-     the grid (longitude normalised per file), gather each ``signal_<event>``
-     mask to ``[(time, n_stations)]``, apply the activation-year and
-     distance-tolerance masks, and write one station-level NetCDF per
-     ``(region, tech, scenario)`` — identical schema to Pipeline B.
+  1. （第一阶段）通过现有第一阶段运行器为指定区域/年份生成全网格极端天气信号，产物与
+     ``scripts/generate_multi_source_grid_signals.py`` 完全一致。若网格信号文件已存在，则跳过该步
+     （通过 ``--grid_signals_dir`` 复用）。
+  2. （第二阶段）读取每个网格信号 NetCDF，把本国场站匹配到网格（逐文件归一经度），将每个
+     ``signal_<event>`` 掩膜抽取为 ``[(time, n_stations)]``，应用投产年份和距离容差掩膜，
+     并按 ``(region, tech, scenario)`` 写出一个场站级 NetCDF；schema 与流程 B 相同。
 
-Trade-off (vs Pipeline B): this pipeline also computes every grid cell, so it
-is slower, but it additionally leaves the full-grid signal files on disk for
-other uses, and lets you derive station signals from a grid run that may
-already exist.
+与流程 B 的取舍：本流程会计算每个网格，因此更慢，但会留下全网格信号文件供其它用途使用，
+也可以从已有网格运行中派生场站信号。
 
-Consistency: for the same inputs, Pipeline A and Pipeline B must yield
-identical per-station masks (A gathers already-computed masks, B gathers
-weather then computes) — see ``tests/test_pipeline_consistency.py``.
+一致性：相同输入下，流程 A 和流程 B 必须得到逐位一致的场站掩膜（A 抽取已计算掩膜，
+B 先抽取气象再计算）；见 ``tests/test_pipeline_consistency.py``。
 
-Example::
+示例::
 
-    # reuse an existing Phase-1 grid run
+    # 复用已有第一阶段网格运行结果
     python scripts/station_signals_from_grid.py \\
         --source regional_bcsd --data_dir data/bcsd_outputs \\
         --model MIROC-ES2H --scenario ssp126 \\
@@ -33,7 +26,7 @@ Example::
         --region Germany --years 2030 \\
         --grid_signals_dir outputs/grid_extreme_signals
 
-    # or generate grid signals first, then extract
+    # 或者先生成网格信号，再抽取场站信号
     python scripts/station_signals_from_grid.py ... --run_phase1
 """
 from __future__ import annotations
@@ -64,7 +57,7 @@ DEFAULT_SHP = "/data6/yanxiaokai/project_climate/data/maps/natural_earth/ne_110m
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Pipeline A: derive per-station signals from full-grid Phase-1 signals.",
+        description="流程 A：从第一阶段全网格信号派生场站级信号。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -72,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["regional_bcsd", "china_cmfd_bcsd", "cordex_nam12"])
     p.add_argument("--data_dir", required=True)
     p.add_argument("--model", required=True)
-    p.add_argument("--scenario", default=None, help="Inferred from --stations_csv if omitted.")
+    p.add_argument("--scenario", default=None, help="省略时从 --stations_csv 推断。")
     p.add_argument("--stations_csv", required=True)
     p.add_argument("--region", default="all")
     p.add_argument("--years", required=True)
@@ -80,23 +73,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--shp", default=DEFAULT_SHP)
     p.add_argument("--max_dist", type=float, default=sm.MAX_DIST_DEG)
     p.add_argument("--grid_signals_dir", default="outputs/grid_extreme_signals",
-                   help="Phase-1 grid signal root (read here).")
+                   help="第一阶段网格信号根目录（从这里读取）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
     p.add_argument("--no_activation_mask", action="store_true")
     p.add_argument("--allow_unit_inference", action="store_true")
     p.add_argument("--allow_missing_optional", action="store_true")
     p.add_argument("--run_phase1", action="store_true",
-                   help="Generate missing grid signals via Phase-1 runner before extracting.")
+                   help="抽取前通过第一阶段运行器生成缺失的网格信号。")
     p.add_argument("--overwrite_grid", action="store_true",
-                   help="With --run_phase1, recompute grid signals even if present.")
+                   help="与 --run_phase1 搭配使用；即使网格信号已存在也重新计算。")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--dry_run", action="store_true")
     return p
 
 
 # ---------------------------------------------------------------------
-# Phase-1 grid signal generation (reuses the existing runner)
+# 第一阶段网格信号生成（复用现有运行器）
 # ---------------------------------------------------------------------
 
 def _grid_signal_path(grid_root, source, model, region, scenario, tech, year) -> str:
@@ -107,7 +100,7 @@ def _grid_signal_path(grid_root, source, model, region, scenario, tech, year) ->
 
 
 def _ensure_grid_signals(adapter, args, region, scenario, techs) -> None:
-    """Run Phase 1 for any missing grid signal files (only if --run_phase1)."""
+    """为缺失的网格信号文件运行第一阶段（仅在 --run_phase1 时）。"""
     from grid_extreme_signals.signal_runner import run_signal_pipeline
     y0, y1 = (int(x) for x in args.years.split("-")) if "-" in args.years else (int(args.years),) * 2
     missing = []
@@ -119,7 +112,7 @@ def _ensure_grid_signals(adapter, args, region, scenario, techs) -> None:
                 missing.append((tech, year))
     if not missing:
         return
-    logger.info("[%s] running Phase-1 for %d missing grid files: %s",
+    logger.info("[%s] 为 %d 个缺失网格文件运行第一阶段：%s",
                 region, len(missing), missing)
     phase_args = SimpleNamespace(**vars(args))
     phase_args.output_root = args.grid_signals_dir
@@ -130,16 +123,16 @@ def _ensure_grid_signals(adapter, args, region, scenario, techs) -> None:
     phase_args.require_events = []
     phase_args.dry_run = False
     phase_args.compress_level = args.compress_level
-    # Restrict to this region; run_signal_pipeline iterates the adapter's tasks.
+    # 限定到当前区域；run_signal_pipeline 会遍历适配器任务。
     run_signal_pipeline(adapter, phase_args)
 
 
 # ---------------------------------------------------------------------
-# Extraction
+# 抽取
 # ---------------------------------------------------------------------
 
 def _bundle_axes_from_grid(ds) -> tuple[str, str, str]:
-    """Discover (time, lat, lon) dim names from a grid signal dataset."""
+    """从网格信号数据集中发现 (time, lat, lon) 维度名。"""
     dims = list(ds.dims)
     time_name = next((d for d in dims if d.lower().startswith("time")), dims[0])
     lat_candidates = [d for d in dims if d.lower() in ("lat", "latitude", "rlat")]
@@ -155,7 +148,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
     for tech in techs:
         stations = country_stations.get(tech)
         if stations is None or len(stations) == 0:
-            logger.info("[%s/%s] no stations — skip", region, tech)
+            logger.info("[%s/%s] 无场站，跳过", region, tech)
             continue
 
         out_path = str(
@@ -163,10 +156,10 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             f"station_signals_{tech}_{args.model}_{region}_{scenario}_{y0}-{y1}.nc"
         )
         if not args.overwrite and os.path.exists(out_path):
-            logger.info("[%s/%s] exists — skip", region, tech)
+            logger.info("[%s/%s] 输出已存在，跳过", region, tech)
             continue
         if args.dry_run:
-            logger.info("[%s/%s] [dry_run] would write %s", region, tech, out_path)
+            logger.info("[%s/%s] [试运行] 将写出 %s", region, tech, out_path)
             continue
 
         match: sm.StationMatch | None = None
@@ -178,7 +171,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             gp = _grid_signal_path(args.grid_signals_dir, args.source, args.model,
                                    region, scenario, tech, year)
             if not os.path.exists(gp):
-                logger.warning("[%s/%s/%d] grid signal missing: %s — skip year",
+                logger.warning("[%s/%s/%d] 网格信号缺失：%s，跳过该年",
                                region, tech, year, gp)
                 continue
             ds = xr.open_dataset(gp)
@@ -186,7 +179,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             sig_vars = [v for v in ds.data_vars if v.startswith("signal_")]
             if not sig_vars:
                 ds.close()
-                logger.warning("[%s/%s/%d] no signal vars in grid file — skip", region, tech, year)
+                logger.warning("[%s/%s/%d] 网格文件中无信号变量，跳过", region, tech, year)
                 continue
 
             times = ds[time_name].values
@@ -200,14 +193,14 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
                 match = sm.match_regular(grid_lat, grid_lon, stations, max_dist=args.max_dist)
                 n_bad = int((~match.valid).sum())
                 if n_bad:
-                    logger.warning("[%s/%s] %d/%d stations exceed max_dist=%.2f°",
+                    logger.warning("[%s/%s] %d/%d 个场站超过最大距离=%.2f°",
                                    region, tech, n_bad, len(match), args.max_dist)
-                # skipped-event reasons from grid file attrs if present
+                # 若网格文件属性中有跳过事件原因，则读取它们
                 for ev in ds.attrs.get("skipped_events", "").split(","):
                     ev = ev.strip()
                     if ev:
-                        skipped_reasons[ev] = ds.attrs.get("skipped_event_reasons", f"missing input for {ev}")
-                logger.info("[%s/%s] matched %d stations (grid %dx%d, lon360=%s)",
+                        skipped_reasons[ev] = ds.attrs.get("skipped_event_reasons", f"{ev} 缺少输入")
+                logger.info("[%s/%s] 已匹配 %d 个场站（网格 %dx%d，经度为360制=%s）",
                             region, tech, len(match), grid_lat.size, grid_lon.size,
                             sm.is_lon_360(grid_lon))
 
@@ -218,7 +211,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             ds.close()
 
         if match is None or not masks_acc:
-            logger.warning("[%s/%s] nothing produced — skip", region, tech)
+            logger.warning("[%s/%s] 未生成任何结果，跳过", region, tech)
             continue
 
         times_all = np.concatenate(times_acc)
@@ -242,7 +235,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             max_dist=args.max_dist, activation_mask_on=not args.no_activation_mask,
             compress_level=args.compress_level,
         )
-        logger.info("[%s/%s] wrote %s  events=%s  stations=%d",
+        logger.info("[%s/%s] 已写出 %s  事件=%s  场站=%d",
                     region, tech, out_path, supported, len(match))
 
 
@@ -254,7 +247,7 @@ def _activation_time_mask(times, activation_years, enabled):
 
 
 # ---------------------------------------------------------------------
-# Main
+# 主流程
 # ---------------------------------------------------------------------
 
 def main() -> None:
@@ -265,12 +258,12 @@ def main() -> None:
 
     if args.source != "regional_bcsd":
         raise NotImplementedError(
-            f"--source {args.source!r} not enabled yet in Pipeline A "
-            "(data not staged). Only 'regional_bcsd' is supported currently."
+            f"--source {args.source!r} 尚未在 Pipeline A 中启用"
+            "（数据尚未部署）。当前仅支持 'regional_bcsd'。"
         )
 
     scenario = args.scenario or sm.infer_scenario_from_csv(args.stations_csv)
-    logger.info("Loading stations %s (scenario=%s)", args.stations_csv, scenario)
+    logger.info("读取场站 %s（情景=%s）", args.stations_csv, scenario)
     stations_df = sm.load_stations(args.stations_csv)
     country_shapes = sm.load_country_shapes(args.shp)
 
@@ -282,24 +275,24 @@ def main() -> None:
     ))
     regions = adapter._resolve_regions()
     techs = ["wind", "solar"] if args.tech == "both" else [args.tech]
-    logger.info("Regions: %d | techs: %s", len(regions), techs)
+    logger.info("区域数：%d | 技术类型：%s", len(regions), techs)
 
     for region in regions:
         country_name = sm.bcsd_region_to_ne_name(region)
         geom = country_shapes.get(country_name)
         if geom is None:
-            logger.warning("[%s] no shapefile match for '%s' — skip", region, country_name)
+            logger.warning("[%s] 未匹配到国家边界 '%s'，跳过", region, country_name)
             continue
         country_stations = {tech: sm.filter_stations_for_country(stations_df, geom, tech)
                             for tech in techs}
         if sum(len(v) for v in country_stations.values()) == 0:
-            logger.info("[%s] no stations — skip", region)
+            logger.info("[%s] 无场站，跳过", region)
             continue
         if args.run_phase1:
             _ensure_grid_signals(adapter, args, region, scenario, techs)
         _process_region(adapter, args, country_stations, region, scenario, techs)
 
-    logger.info("Pipeline A complete.")
+    logger.info("流程 A 完成。")
 
 
 if __name__ == "__main__":

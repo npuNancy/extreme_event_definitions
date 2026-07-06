@@ -1,15 +1,15 @@
-"""Adapter for CMIP6–CORDEX NAM-12 data (rotated pole grid).
+"""CMIP6–CORDEX NAM-12 数据适配器（旋转极点网格）。
 
-**Critical**: The output must preserve the rotated pole grid structure:
-  - Primary dims: ``(time, rlat, rlon)``
-  - Auxiliary 2D coordinates: ``lat(rlat, rlon)``, ``lon(rlat, rlon)``
-  - Grid mapping: ``crs`` variable
+**关键要求**：输出必须保留旋转极点网格结构：
+  - 主维度：``(time, rlat, rlon)``
+  - 二维辅助坐标：``lat(rlat, rlon)``、``lon(rlat, rlon)``
+  - 网格映射：``crs`` 变量
 
-File layout::
+文件布局::
 
     {data_dir}/{gcm_model}/{realization}/{rcm_model}/{scenario}/{var}/{var}_NAM-12_{gcm_model}_*.nc
 
-Variables: rsds, tas, uas, vas (pr optional).  Hourly.
+变量：rsds、tas、uas、vas（pr 可选）。时间分辨率为逐小时。
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 class CordexNam12Adapter(WeatherAdapter):
-    """Adapter for CMIP6–CORDEX NAM-12 rotated pole data."""
+    """CMIP6–CORDEX NAM-12 旋转极点数据适配器。"""
 
     def __init__(self, args) -> None:
         self.data_dir = args.data_dir
@@ -61,7 +61,7 @@ class CordexNam12Adapter(WeatherAdapter):
         self.allow_missing_optional = getattr(args, "allow_missing_optional", False)
 
     # ------------------------------------------------------------------
-    # Task iteration
+    # 任务迭代
     # ------------------------------------------------------------------
 
     def iter_tasks(self, args) -> list[dict]:
@@ -79,7 +79,7 @@ class CordexNam12Adapter(WeatherAdapter):
         return tasks
 
     # ------------------------------------------------------------------
-    # Output paths
+    # 输出路径
     # ------------------------------------------------------------------
 
     def _base_dir(self, task: dict, tech: str) -> Path:
@@ -105,13 +105,13 @@ class CordexNam12Adapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # File handling
+    # 文件处理
     # ------------------------------------------------------------------
 
     def _find_files_for_year(
         self, task: dict, var: str, year: int,
     ) -> Path | None:
-        """Find the CORDEX file for a specific variable and year."""
+        """查找指定变量和年份对应的 CORDEX 文件。"""
         base = (
             Path(task["data_dir"])
             / task["gcm_model"]
@@ -124,12 +124,12 @@ class CordexNam12Adapter(WeatherAdapter):
         files = sorted(glob.glob(pattern))
         if not files:
             return None
-        # Try to find the file for the specific year
+        # 尝试查找指定年份文件
         for f in files:
             m = re.search(r"_(\d{4})\d{8}-\d{12}\.nc$", os.path.basename(f))
             if m and int(m.group(1)) == year:
                 return Path(f)
-        # If no year match, use first file (some datasets are single-file)
+        # 若没有年份匹配，则使用第一个文件（部分数据是单文件）
         if len(files) == 1:
             return Path(files[0])
         return Path(files[0])
@@ -140,7 +140,7 @@ class CordexNam12Adapter(WeatherAdapter):
         var: str,
         year: int,
     ) -> tuple[xr.Dataset, xr.DataArray, str, str | None]:
-        """Open a CORDEX variable file and return (ds, da, var_name, units)."""
+        """打开 CORDEX 变量文件，并返回 (ds, da, var_name, units)。"""
         fpath = self._find_files_for_year(task, var, year)
         if fpath is None:
             raise FileNotFoundError(f"Cannot find CORDEX file for {var}, year={year}")
@@ -153,7 +153,7 @@ class CordexNam12Adapter(WeatherAdapter):
         var_name = get_var_name(ds, var, use_bcsd_suffix=False)
         da = ds[var_name]
 
-        # Squeeze singleton extra dims
+        # 压缩单长度额外维度
         canonical = {time_name, rlat_name, rlon_name}
         for dim in list(da.dims):
             if dim not in canonical and da.sizes[dim] == 1:
@@ -164,7 +164,7 @@ class CordexNam12Adapter(WeatherAdapter):
         return ds, da, time_name, units
 
     def _discover_coord_names(self, task: dict, year: int) -> tuple[str, str, str]:
-        """Discover time, rlat, rlon names from a sample file."""
+        """从样例文件中发现 time、rlat、rlon 名称。"""
         fpath = self._find_files_for_year(task, "rsds", year)
         if fpath is None:
             fpath = self._find_files_for_year(task, "tas", year)
@@ -184,7 +184,7 @@ class CordexNam12Adapter(WeatherAdapter):
     def _extract_aux_coords(
         self, ds: xr.Dataset, rlat_name: str, rlon_name: str,
     ) -> dict[str, xr.DataArray]:
-        """Extract 2D lat/lon and crs from a CORDEX dataset."""
+        """从 CORDEX 数据集中提取二维 lat/lon 和 crs。"""
         aux = {}
         for cname in ("lat", "latitude", "lon", "longitude"):
             if cname in ds.coords:
@@ -194,7 +194,7 @@ class CordexNam12Adapter(WeatherAdapter):
         return aux
 
     # ------------------------------------------------------------------
-    # Wind weather
+    # 风电气象
     # ------------------------------------------------------------------
 
     def load_wind_weather(self, task: dict) -> WeatherBundle:
@@ -202,7 +202,7 @@ class CordexNam12Adapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Open uas, vas (required)
+        # 打开 uas、vas（必需）
         ds_uas, uas_da, time_name, uas_units = self._open_var(task, "uas", year)
         _, vas_da, _, vas_units = self._open_var(task, "vas", year)
         rlat_name = find_coord_name(ds_uas, RLAT_CANDIDATES)
@@ -211,28 +211,28 @@ class CordexNam12Adapter(WeatherAdapter):
         source_files.append(str(self._find_files_for_year(task, "uas", year)))
         source_files.append(str(self._find_files_for_year(task, "vas", year)))
 
-        # Optional: tas
+        # 可选：tas
         try:
             ds_tas, tas_da, _, tas_units = self._open_var(task, "tas", year)
             source_files.append(str(self._find_files_for_year(task, "tas", year)))
         except FileNotFoundError:
             tas_da = None
             tas_units = None
-            skipped_inputs["temp_C"] = "tas file not found"
+            skipped_inputs["temp_C"] = "未找到 tas 文件"
             ds_tas = None
 
-        # Filter to year
+        # 筛选年份
         uas_da = self._filter_year(uas_da, time_name, year)
         vas_da = self._filter_year(vas_da, time_name, year)
         wind_time = uas_da[time_name].values
 
-        # Interpolate tas if needed
+        # 必要时插值 tas
         time_alignment = "uas/vas instantaneous (:00) native"
         if tas_da is not None:
             tas_da = self._filter_year(tas_da, time_name, year)
             tas_time = tas_da[time_name].values
             if not np.array_equal(tas_time, wind_time):
-                logger.info("Interpolating tas to wind time axis")
+                logger.info("将 tas 插值到风速时间轴")
                 temp_C = tas_to_celsius(
                     interp_instantaneous_to_target(tas_da, time_name, wind_time),
                     tas_units,
@@ -244,16 +244,16 @@ class CordexNam12Adapter(WeatherAdapter):
         else:
             temp_C = None
 
-        # Wind speed
+        # 风速
         wind_ms = np.sqrt(
             uas_da.values.astype(np.float32) ** 2
             + vas_da.values.astype(np.float32) ** 2,
         )
 
-        # Extract auxiliary coordinates
+        # 提取辅助坐标
         aux_coords = self._extract_aux_coords(ds_uas, rlat_name, rlon_name)
 
-        # Build dataset
+        # 构建数据集
         coords = {
             time_name: uas_da[time_name],
             rlat_name: uas_da[rlat_name],
@@ -269,10 +269,10 @@ class CordexNam12Adapter(WeatherAdapter):
 
         ds = xr.Dataset(data_vars, coords=coords)
 
-        skipped_inputs.setdefault("rh_pct", "no humidity data in CORDEX")
-        skipped_inputs.setdefault("dust_aod", "no dust data in CORDEX")
-        skipped_inputs.setdefault("rsds", "not used for wind signals")
-        skipped_inputs.setdefault("precip_mmh", "not used for wind signals")
+        skipped_inputs.setdefault("rh_pct", "CORDEX 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "CORDEX 无沙尘数据")
+        skipped_inputs.setdefault("rsds", "风电信号不使用该变量")
+        skipped_inputs.setdefault("precip_mmh", "风电信号不使用该变量")
 
         ds_uas.close()
         if ds_tas is not None:
@@ -298,7 +298,7 @@ class CordexNam12Adapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Solar weather
+    # 光伏气象
     # ------------------------------------------------------------------
 
     def load_solar_weather(self, task: dict) -> WeatherBundle:
@@ -306,7 +306,7 @@ class CordexNam12Adapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Required: rsds (target time axis, typically :30)
+        # 必需：rsds（目标时间轴，通常为 :30）
         ds_rsds, rsds_da, time_name, rsds_units = self._open_var(task, "rsds", year)
         rlat_name = find_coord_name(ds_rsds, RLAT_CANDIDATES)
         rlon_name = find_coord_name(ds_rsds, RLON_CANDIDATES)
@@ -315,7 +315,7 @@ class CordexNam12Adapter(WeatherAdapter):
         rsds_da = self._filter_year(rsds_da, time_name, year)
         target_times = rsds_da[time_name].values
 
-        # Required: tas, uas, vas
+        # 必需：tas、uas、vas
         ds_tas, tas_da, _, tas_units = self._open_var(task, "tas", year)
         ds_uas, uas_da, _, uas_units = self._open_var(task, "uas", year)
         _, vas_da, _, vas_units = self._open_var(task, "vas", year)
@@ -327,7 +327,7 @@ class CordexNam12Adapter(WeatherAdapter):
         uas_da = self._filter_year(uas_da, time_name, year)
         vas_da = self._filter_year(vas_da, time_name, year)
 
-        # Optional: pr
+        # 可选：pr
         pr_da = None
         pr_units = None
         try:
@@ -335,17 +335,17 @@ class CordexNam12Adapter(WeatherAdapter):
             source_files.append(str(self._find_files_for_year(task, "pr", year)))
             pr_da = self._filter_year(pr_da_raw, time_name, year)
         except FileNotFoundError:
-            skipped_inputs["precip_mmh"] = "pr file not found"
-            logger.warning("pr file not found for CORDEX — precipitation events will be skipped")
+            skipped_inputs["precip_mmh"] = "未找到 pr 文件"
+            logger.warning("CORDEX 未找到 pr 文件，将跳过降水事件")
             ds_pr = None
 
-        # Interpolate instantaneous vars to rsds time axis
+        # 将瞬时变量插值到 rsds 时间轴
         tas_time = tas_da[time_name].values
         uas_time = uas_da[time_name].values
         need_interp = not np.array_equal(tas_time, target_times)
 
         if need_interp:
-            logger.info("Interpolating tas/uas/vas to rsds :30 time axis")
+            logger.info("将 tas/uas/vas 插值到 rsds :30 时间轴")
             temp_C = tas_to_celsius(
                 interp_instantaneous_to_target(tas_da, time_name, target_times),
                 tas_units,
@@ -385,10 +385,10 @@ class CordexNam12Adapter(WeatherAdapter):
                 allow_inference=self.allow_unit_inference,
             )
 
-        # Extract auxiliary coordinates
+        # 提取辅助坐标
         aux_coords = self._extract_aux_coords(ds_rsds, rlat_name, rlon_name)
 
-        # Build dataset
+        # 构建数据集
         coords = {
             time_name: rsds_da[time_name],
             rlat_name: rsds_da[rlat_name],
@@ -406,8 +406,8 @@ class CordexNam12Adapter(WeatherAdapter):
 
         ds = xr.Dataset(data_vars, coords=coords)
 
-        skipped_inputs.setdefault("rh_pct", "no humidity data in CORDEX")
-        skipped_inputs.setdefault("dust_aod", "no dust data in CORDEX")
+        skipped_inputs.setdefault("rh_pct", "CORDEX 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "CORDEX 无沙尘数据")
 
         ds_rsds.close()
         ds_tas.close()

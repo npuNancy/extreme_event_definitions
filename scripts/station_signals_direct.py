@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
-"""Pipeline B — station-direct extreme weather signal generation.
+"""流程 B：直接生成场站级极端天气信号。
 
-For every region that has weather data on disk, this pipeline:
+对每个已有气象数据的区域，本流程会：
 
-  1. loads + standardises the weather via the existing multi-source adapter
-     (``RegionalBcsdAdapter`` etc.) — the same path Phase 1 uses;
-  2. selects only the stations that fall inside that region's country polygon
-     (point-in-polygon on Natural Earth) and deduplicates them with
-     ``activation_year = min(year)``;
-  3. matches each station to the nearest grid cell (longitude normalised to
-     ``[-180, 180)`` per file — BCSD's convention is region-dependent);
-  4. gathers the standardised weather variables to the matched cells into
-     ``(time, n_stations)`` arrays and runs ``registry.simple_signals``;
-  5. applies the activation-year mask (signal is 0 before the station exists)
-     and the distance-tolerance mask, then writes one station-level NetCDF per
-     ``(region, tech, scenario)``.
+  1. 通过现有多数据源适配器（如 ``RegionalBcsdAdapter``）加载并标准化气象数据，路径与 Phase 1 一致；
+  2. 只选择落在该区域国家多边形内的场站（Natural Earth 点在多边形内判断），并以
+     ``activation_year = min(year)`` 去重；
+  3. 将每个场站匹配到最近网格（逐文件把经度归一到 ``[-180, 180)``；BCSD 经度约定随区域而变）；
+  4. 将标准化气象变量提取到匹配网格，形成 ``(time, n_stations)`` 数组，并运行
+     ``registry.simple_signals``；
+  5. 应用投产年份掩膜（投产前信号为 0）和距离容差掩膜，然后按 ``(region, tech, scenario)``
+     写出场站级 NetCDF。
 
-It never writes full-grid signal files — only per-station output.  Stations in
-countries without weather data are simply never processed.
+本流程不写全网格信号，只写场站级输出。没有气象数据的国家不会被处理。
 
-Currently supports ``--source regional_bcsd``.  ``china_cmfd_bcsd`` /
-``cordex_nam12`` are wired through the shared matching layer but data is not
-staged yet; they will be enabled when their NetCDFs arrive.
+当前支持 ``--source regional_bcsd``。``china_cmfd_bcsd`` / ``cordex_nam12`` 已接入共享匹配层，
+但数据尚未部署；NetCDF 到位后再启用。
 
-Example::
+示例::
 
     python scripts/station_signals_direct.py \\
         --source regional_bcsd \\
@@ -60,35 +54,35 @@ DEFAULT_SHP = "/data6/yanxiaokai/project_climate/data/maps/natural_earth/ne_110m
 
 
 # =====================================================================
-# CLI
+# 命令行参数
 # =====================================================================
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Pipeline B: generate per-station extreme-weather signals directly (no grid output).",
+        description="流程 B：直接生成场站级极端天气信号（不输出网格文件）。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     p.add_argument("--source", default="regional_bcsd",
                    choices=["regional_bcsd", "china_cmfd_bcsd", "cordex_nam12"],
-                   help="Data source (regional_bcsd supported now; others deferred).")
-    p.add_argument("--data_dir", required=True, help="Input data root directory.")
-    p.add_argument("--model", required=True, help="Climate model name.")
+                   help="数据源（当前支持 regional_bcsd，其它数据源暂缓）。")
+    p.add_argument("--data_dir", required=True, help="输入数据根目录。")
+    p.add_argument("--model", required=True, help="气候模式名称。")
     p.add_argument("--scenario", default=None,
-                   help="Scenario code (e.g. ssp126). Inferred from --stations_csv if omitted.")
+                   help="情景代码（如 ssp126）；省略时从 --stations_csv 推断。")
     p.add_argument("--stations_csv", required=True,
-                   help="Station siting CSV (e.g. data/stations/stations_SSP1-2.6.csv).")
+                   help="场站选址 CSV（如 data/stations/stations_SSP1-2.6.csv）。")
     p.add_argument("--region", default="all",
-                   help="Region name or 'all' (default: all regions with data).")
-    p.add_argument("--years", required=True, help="Year range: 'YYYY' or 'YYYY-YYYY'.")
+                   help="区域名称或 'all'（默认：所有有数据的区域）。")
+    p.add_argument("--years", required=True, help="年份范围：'YYYY' 或 'YYYY-YYYY'。")
     p.add_argument("--tech", choices=["wind", "solar", "both"], default="both")
-    p.add_argument("--shp", default=DEFAULT_SHP, help="Natural Earth countries shapefile.")
+    p.add_argument("--shp", default=DEFAULT_SHP, help="Natural Earth 国家边界 shapefile。")
     p.add_argument("--max_dist", type=float, default=sm.MAX_DIST_DEG,
-                   help="Nearest-cell distance tolerance in degrees (default %(default)s).")
+                   help="最近邻网格距离容差（单位：度，默认 %(default)s）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
     p.add_argument("--no_activation_mask", action="store_true",
-                   help="Keep signals for all years (do not zero pre-activation years).")
+                   help="保留所有年份信号（不把投产前年份置零）。")
     p.add_argument("--allow_unit_inference", action="store_true")
     p.add_argument("--allow_missing_optional", action="store_true")
     p.add_argument("--overwrite", action="store_true")
@@ -97,11 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # =====================================================================
-# Helpers
+# 辅助函数
 # =====================================================================
 
 def _bundle_spatial_axes(bundle) -> tuple[str, str, str]:
-    """Return (time_name, lat_name, lon_name) for a regular-latlon bundle."""
+    """返回规则经纬度 bundle 的 (time_name, lat_name, lon_name)。"""
     spatial = set(bundle.spatial_dims)
     sample = next(iter(bundle.dataset.data_vars.values()))
     time_name = next(d for d in sample.dims if d not in spatial)
@@ -110,9 +104,9 @@ def _bundle_spatial_axes(bundle) -> tuple[str, str, str]:
 
 
 def _gather_weather(bundle, match: sm.StationMatch) -> dict[str, np.ndarray]:
-    """Gather standardised weather vars from the bundle grid to stations.
+    """将 bundle 网格上的标准化气象变量抽取到场站。
 
-    Returns ``{var_name: (time, n_stations) float32}``.
+    返回 ``{var_name: (time, n_stations) float32}``。
     """
     out: dict[str, np.ndarray] = {}
     for var in ("temp_C", "wind_ms", "precip_mmh", "rsds", "rh_pct", "dust_aod"):
@@ -125,7 +119,7 @@ def _gather_weather(bundle, match: sm.StationMatch) -> dict[str, np.ndarray]:
 
 def _activation_time_mask(times: np.ndarray, activation_years: np.ndarray,
                           enabled: bool) -> np.ndarray:
-    """(T, n_sta) bool: True where the station is active at that time."""
+    """(T, n_sta) bool：场站在该时刻已投产则为 True。"""
     if not enabled:
         return np.ones((times.shape[0], activation_years.shape[0]), dtype=bool)
     years = pd.DatetimeIndex(times).year.to_numpy(np.int64)[:, None]
@@ -139,16 +133,16 @@ def _skip(path: str, overwrite: bool) -> bool:
 
 
 # =====================================================================
-# Per-tech processing
+# 分技术类型处理
 # =====================================================================
 
 def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
                   region: str, scenario: str, tech: str,
                   country_shapes: dict) -> str | None:
-    """Process one (region, tech); return the output path or None if skipped."""
+    """处理一个 (region, tech)；若跳过则返回 None，否则返回输出路径。"""
     stations = country_stations.get(tech)
     if stations is None or len(stations) == 0:
-        logger.info("[%s/%s] no stations in country — skip", region, tech)
+        logger.info("[%s/%s] 国家内无场站，跳过", region, tech)
         return None
 
     y0, y1 = (int(x) for x in args.years.split("-")) if "-" in args.years else (int(args.years),) * 2
@@ -157,10 +151,10 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         f"station_signals_{tech}_{args.model}_{region}_{scenario}_{y0}-{y1}.nc"
     )
     if _skip(out_path, args.overwrite):
-        logger.info("[%s/%s] exists — skip (--overwrite to recompute)", region, tech)
+        logger.info("[%s/%s] 输出已存在，跳过（使用 --overwrite 重新计算）", region, tech)
         return out_path
     if args.dry_run:
-        logger.info("[%s/%s] [dry_run] would write %s", region, tech, out_path)
+        logger.info("[%s/%s] [试运行] 将写出 %s", region, tech, out_path)
         return out_path
 
     match: sm.StationMatch | None = None
@@ -175,32 +169,32 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
             bundle = (adapter.load_wind_weather(task) if tech == "wind"
                       else adapter.load_solar_weather(task))
         except (FileNotFoundError, ValueError) as e:
-            logger.warning("[%s/%s/%d] missing input: %s — stop year loop", region, tech, year, e)
+            logger.warning("[%s/%s/%d] 输入缺失：%s，停止年份循环", region, tech, year, e)
             break
 
         time_name, lat_name, lon_name = _bundle_spatial_axes(bundle)
         times = bundle.dataset[time_name].values
         if times.size == 0:
-            logger.warning("[%s/%d] empty time axis — skip year", region, year)
+            logger.warning("[%s/%d] 时间轴为空，跳过该年", region, year)
             continue
 
-        # Match once per region/tech (grid is constant across years)
+        # 每个区域/技术只匹配一次（网格跨年份不变）
         if match is None:
             grid_lat = bundle.dataset[lat_name].values
             grid_lon = bundle.dataset[lon_name].values
             match = sm.match_regular(grid_lat, grid_lon, stations, max_dist=args.max_dist)
             n_bad = int((~match.valid).sum())
             if n_bad:
-                logger.warning("[%s/%s] %d/%d stations exceed max_dist=%.2f° (will be zeroed)",
+                logger.warning("[%s/%s] %d/%d 个场站超过最大距离=%.2f°（将置零）",
                                region, tech, n_bad, len(match), args.max_dist)
             skipped_inputs = dict(bundle.skipped_inputs)
-            logger.info("[%s/%s] matched %d stations (grid %dx%d, lon360=%s)",
+            logger.info("[%s/%s] 已匹配 %d 个场站（网格 %dx%d，经度为360制=%s）",
                         region, tech, len(match),
                         grid_lat.size, grid_lon.size, sm.is_lon_360(grid_lon))
 
         weather = _gather_weather(bundle, match)
         if not weather:
-            logger.warning("[%s/%s/%d] no weather vars gathered — skip year", region, tech, year)
+            logger.warning("[%s/%s/%d] 未提取到气象变量，跳过该年", region, tech, year)
             continue
         masks = registry.simple_signals(tech, weather, skip_missing=True)
         for name, arr in masks.items():
@@ -209,14 +203,14 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         del bundle, weather, masks
 
     if match is None or not masks_acc:
-        logger.warning("[%s/%s] nothing produced — skip", region, tech)
+        logger.warning("[%s/%s] 未生成任何结果，跳过", region, tech)
         return None
 
-    # Concatenate across years
+    # 跨年份拼接
     times_all = np.concatenate(times_acc)
     masks_all = {name: np.concatenate(parts, axis=0) for name, parts in masks_acc.items()}
 
-    # Activation + distance masks
+    # 投产年份掩膜 + 距离掩膜
     act = _activation_time_mask(
         times_all, match.stations["activation_year"].to_numpy(np.int64),
         enabled=not args.no_activation_mask,
@@ -226,12 +220,12 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
     supported = sorted(masks_all.keys())
     all_simple = set(registry.SIMPLE[tech].keys())
     skipped = sorted(all_simple - set(supported))
-    skipped_reasons = {ev: skipped_inputs.get(_first_req_var(tech, ev), f"missing input for {ev}")
+    skipped_reasons = {ev: skipped_inputs.get(_first_req_var(tech, ev), f"{ev} 缺少输入")
                        for ev in skipped}
 
     out_masks: dict[str, np.ndarray] = {}
     for name, arr in masks_all.items():
-        arr = arr & act & valid  # zero pre-activation and out-of-tolerance stations
+        arr = arr & act & valid  # 投产前年份和超距离容差场站置零
         out_masks[f"signal_{name}"] = arr.astype(np.int8)
 
     sm.write_station_signals(
@@ -242,7 +236,7 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         max_dist=args.max_dist, activation_mask_on=not args.no_activation_mask,
         compress_level=args.compress_level,
     )
-    logger.info("[%s/%s] wrote %s  events=%s  stations=%d  steps=%d",
+    logger.info("[%s/%s] 已写出 %s  事件=%s  场站=%d  时间步=%d",
                 region, tech, out_path, supported, len(match), times_all.size)
     return out_path
 
@@ -257,7 +251,7 @@ def _first_req_var(tech: str, event_name: str) -> str:
 
 
 # =====================================================================
-# Main
+# 主流程
 # =====================================================================
 
 def main() -> None:
@@ -268,14 +262,14 @@ def main() -> None:
 
     if args.source != "regional_bcsd":
         raise NotImplementedError(
-            f"--source {args.source!r} not enabled yet in Pipeline B "
-            "(data not staged). Only 'regional_bcsd' is supported currently."
+            f"--source {args.source!r} 尚未在 Pipeline B 中启用"
+            "（数据尚未部署）。当前仅支持 'regional_bcsd'。"
         )
 
     scenario = args.scenario or sm.infer_scenario_from_csv(args.stations_csv)
-    logger.info("Loading stations %s (scenario=%s)", args.stations_csv, scenario)
+    logger.info("读取场站 %s（情景=%s）", args.stations_csv, scenario)
     stations_df = sm.load_stations(args.stations_csv)
-    logger.info("Loading country shapes %s", args.shp)
+    logger.info("读取国家边界 %s", args.shp)
     country_shapes = sm.load_country_shapes(args.shp)
 
     adapter = RegionalBcsdAdapter(SimpleNamespace(
@@ -286,27 +280,27 @@ def main() -> None:
     ))
     regions = adapter._resolve_regions()
     techs = ["wind", "solar"] if args.tech == "both" else [args.tech]
-    logger.info("Regions: %d | techs: %s", len(regions), techs)
+    logger.info("区域数：%d | 技术类型：%s", len(regions), techs)
 
     for region in regions:
         country_name = sm.bcsd_region_to_ne_name(region)
         geom = country_shapes.get(country_name)
         if geom is None:
-            logger.warning("[%s] no shapefile match for '%s' — skip", region, country_name)
+            logger.warning("[%s] 未匹配到国家边界 '%s'，跳过", region, country_name)
             continue
         country_stations = {
             tech: sm.filter_stations_for_country(stations_df, geom, tech) for tech in techs
         }
         n_total = sum(len(v) for v in country_stations.values())
         if n_total == 0:
-            logger.info("[%s] no stations in country — skip", region)
+            logger.info("[%s] 国家内无场站，跳过", region)
             continue
-        logger.info("[%s] country=%s stations=%s",
+        logger.info("[%s] 国家=%s 场站=%s",
                     region, country_name, {t: len(v) for t, v in country_stations.items()})
         for tech in techs:
             _process_tech(adapter, args, country_stations, region, scenario, tech, country_shapes)
 
-    logger.info("Pipeline B complete.")
+    logger.info("流程 B 完成。")
 
 
 if __name__ == "__main__":

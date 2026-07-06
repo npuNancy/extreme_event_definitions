@@ -1,9 +1,9 @@
-"""Base classes for data source adapters.
+"""数据源适配器基类。
 
-Every adapter must:
-  1. Yield *task dicts* via ``iter_tasks`` — one per processing unit (year or month).
-  2. Return a :class:`WeatherBundle` from ``load_wind_weather`` / ``load_solar_weather``.
-  3. Provide output-path helpers.
+每个适配器必须：
+  1. 通过 ``iter_tasks`` 产出任务字典，每个处理单元（年或月）一个。
+  2. 从 ``load_wind_weather`` / ``load_solar_weather`` 返回 :class:`WeatherBundle`。
+  3. 提供输出路径辅助函数。
 """
 from __future__ import annotations
 
@@ -16,34 +16,33 @@ import xarray as xr
 
 @dataclass
 class WeatherBundle:
-    """Standardised weather data ready for event detection.
+    """已标准化、可用于事件识别的气象数据。
 
-    ``dataset`` contains unified weather variables (temp_C, wind_ms, precip_mmh,
-    rsds, rh_pct, dust_aod) on the source's native spatial grid.  Only the
-    variables that exist for the given source / tech are included.
+    ``dataset`` 包含源数据原生空间网格上的统一气象变量（temp_C、wind_ms、precip_mmh、
+    rsds、rh_pct、dust_aod）。只包含给定数据源/技术类型实际存在的变量。
 
     Attributes
     ----------
     source : str
-        Data source identifier (``regional_bcsd``, ``china_cmfd_bcsd``, etc.).
+        数据源标识（如 ``regional_bcsd``、``china_cmfd_bcsd``）。
     tech : str
-        ``"wind"`` or ``"solar"`` — determines which events are applicable.
+        ``"wind"`` 或 ``"solar"``，用于决定适用事件。
     dataset : xr.Dataset
-        Unified weather variables with dims ``(time, *spatial_dims)``.
+        统一气象变量，维度为 ``(time, *spatial_dims)``。
     spatial_dims : tuple[str, ...]
-        Spatial dimension names, e.g. ``("lat", "lon")`` or ``("rlat", "rlon")``.
+        空间维度名，如 ``("lat", "lon")`` 或 ``("rlat", "rlon")``。
     grid_kind : str
-        ``"regular_latlon"`` or ``"rotated_pole"``.
+        ``"regular_latlon"`` 或 ``"rotated_pole"``。
     target_time_axis : str
-        Human-readable description of the target time axis used.
+        所用目标时间轴的可读说明。
     source_timestep_hours : float
-        Nominal time step of the source data (3.0 for BCSD, 1.0 for ERA5-Land / CORDEX).
+        源数据名义时间步长（BCSD 为 3.0，ERA5-Land / CORDEX 为 1.0）。
     source_files : Sequence[str]
-        Input file paths that were actually read.
+        实际读取的输入文件路径。
     skipped_inputs : dict[str, str]
-        Unified variable name → reason it is missing.
+        统一变量名 → 缺失原因。
     attrs_extra : dict[str, str]
-        Extra global attributes to merge into the output NetCDF.
+        合并到输出 NetCDF 的额外全局属性。
     """
 
     source: str
@@ -59,40 +58,40 @@ class WeatherBundle:
 
 
 class WeatherAdapter(ABC):
-    """Abstract adapter interface for a specific climate data source."""
+    """特定气候数据源的抽象适配器接口。"""
 
     # ------------------------------------------------------------------
-    # Task iteration
+    # 任务迭代
     # ------------------------------------------------------------------
     @abstractmethod
     def iter_tasks(self, args) -> list[dict]:
-        """Return a list of task descriptors to process.
+        """返回待处理任务描述列表。
 
-        Each task is a plain dict whose contents depend on the source.
-        Example (regional_bcsd):
+        每个任务都是普通 dict，内容取决于数据源。
+        示例（regional_bcsd）：
             ``{"model": ..., "region": ..., "scenario": ..., "year": ...}``
-        Example (era5land_raw):
+        示例（era5land_raw）：
             ``{"year": ..., "month": ...}``
         """
 
     # ------------------------------------------------------------------
-    # Weather loading
+    # 气象加载
     # ------------------------------------------------------------------
     @abstractmethod
     def load_wind_weather(self, task: dict) -> WeatherBundle:
-        """Load & standardise weather variables for *wind* events."""
+        """加载并标准化风电事件所需气象变量。"""
 
     @abstractmethod
     def load_solar_weather(self, task: dict) -> WeatherBundle:
-        """Load & standardise weather variables for *solar* events."""
+        """加载并标准化光伏事件所需气象变量。"""
 
     # ------------------------------------------------------------------
-    # Output path helpers
+    # 输出路径辅助函数
     # ------------------------------------------------------------------
     @abstractmethod
     def signal_output_path(self, task: dict, tech: str) -> str:
-        """Return the absolute path for the signal output file."""
+        """返回信号输出文件的绝对路径。"""
 
     @abstractmethod
     def weather_output_path(self, task: dict, tech: str) -> str:
-        """Return the absolute path for the (optional) weather output file."""
+        """返回可选气象输出文件的绝对路径。"""

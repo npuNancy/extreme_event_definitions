@@ -1,24 +1,22 @@
-"""Station-to-grid matching utilities (shared by Pipeline A and Pipeline B).
+"""场站到网格的匹配工具（Pipeline A 与 Pipeline B 共用）。
 
-This module ports the **verified** station/grid matching logic from
-``ref_code/calculate_wind_solar_out/station_output_calculator_0p1deg.py`` and
-adapts it to the multi-source adapter layer of this project.
+本模块移植了
+``ref_code/calculate_wind_solar_out/station_output_calculator_0p1deg.py`` 中
+已验证的场站/网格匹配逻辑，并适配到本项目的多数据源适配器层。
 
-Responsibilities
-----------------
-- Longitude normalisation.  **Longitude convention is NOT uniform**: stations
-  arrive as ``[-180, 180)``; the BCSD *weather* grid convention is **region-
-  dependent** (e.g. Germany stored as ``5..15`` but Portugal as ``328.7..353.7``
-  i.e. ``[0, 360)``).  Every grid longitude is therefore normalised to
-  ``[-180, 180)`` on a per-file basis before matching.
-- Nearest-cell lookup: separable 1D argmin (regular lat/lon, circular longitude)
-  and 2D cKDTree (rotated-pole NAM-12).
-- Country assignment via Natural Earth polygons (point-in-polygon), station
-  deduplication with ``activation_year = min(year)``.
-- Vectorised gather of a ``(time, *spatial)`` array to ``[(time, n_stations)]``.
+职责
+----
+- 经度归一化。**经度约定并不统一**：场站输入为 ``[-180, 180)``；BCSD 气象网格
+  的经度约定随区域变化（例如 Germany 存为 ``5..15``，Portugal 存为
+  ``328.7..353.7``，即 ``[0, 360)``）。因此匹配前会按文件把每个网格经度归一化
+  到 ``[-180, 180)``。
+- 最近网格查找：规则经纬度网格使用可分离的一维 argmin（经度为环形距离），
+  旋转极点 NAM-12 网格使用二维 cKDTree。
+- 通过 Natural Earth 国家边界做场站归属（点在多边形内），并以
+  ``activation_year = min(year)`` 去重场站。
+- 将 ``(time, *spatial)`` 数组向量化抽取为 ``(time, n_stations)``。
 
-Both pipelines import these primitives; the pipelines themselves never call
-each other, keeping them decoupled.
+两个 pipeline 都只导入这些基础函数；pipeline 之间不互相调用，以保持解耦。
 """
 from __future__ import annotations
 
@@ -41,15 +39,15 @@ from shapely.prepared import prep
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# 常量
 # ---------------------------------------------------------------------------
 
-#: Default nearest-neighbour distance tolerance (degrees).
-#: BCSD ≈ 0 (stations and grid are both 0.1° integer-offset); China/NAM-12
-#: ≈ 0.05–0.11.  0.15° covers both without rejecting valid in-grid stations.
+#: 默认最近邻距离容差（单位：度）。
+#: BCSD 通常约为 0（场站和网格都是 0.1° 整数偏移）；China/NAM-12 通常约为
+#: 0.05–0.11。0.15° 可以覆盖两者，同时不会误拒绝有效的网格内场站。
 MAX_DIST_DEG: float = 0.15
 
-#: Station CSV filename → SSP scenario code.
+#: 场站 CSV 文件名 → SSP 情景代码。
 SSP_MAP = {
     "SSP1-2.6": "ssp126",
     "SSP2-4.5": "ssp245",
@@ -57,7 +55,7 @@ SSP_MAP = {
     "SSP5-8.5": "ssp585",
 }
 
-#: BCSD region directory names that differ from the Natural Earth ``NAME`` field.
+#: 与 Natural Earth ``NAME`` 字段不同的 BCSD 区域目录名。
 BCSD_REGION_TO_NAME = {
     "South-Africa": "South Africa",
     "South-Korea": "South Korea",
@@ -67,64 +65,60 @@ BCSD_REGION_TO_NAME = {
 
 
 # ---------------------------------------------------------------------------
-# Longitude normalisation
+# 经度归一化
 # ---------------------------------------------------------------------------
 
 def lon_to_360(lon):
-    """Longitude ``[-180, 180]`` → ``[0, 360)``."""
+    """经度 ``[-180, 180]`` → ``[0, 360)``。"""
     return np.asarray(lon, dtype=np.float64) % 360.0
 
 
 def lon_to_180(lon):
-    """Longitude ``[0, 360]`` → ``[-180, 180)``."""
+    """经度 ``[0, 360]`` → ``[-180, 180)``。"""
     return ((np.asarray(lon, dtype=np.float64) + 180.0) % 360.0) - 180.0
 
 
 def is_lon_360(grid_lon) -> bool:
-    """Return True if a grid longitude axis looks like ``[0, 360)``.
+    """若网格经度轴看起来像 ``[0, 360)``，返回 True。
 
-    Detection rule: any value > 180 ⇒ the convention is ``[0, 360)``.
-    A region whose true longitudes are all positive (e.g. Germany 5..15) is
-    ambiguous, but normalising it is a no-op there; a region with any negative
-    true longitude (Portugal, Ireland, Chile) is stored > 180 in ``[0, 360)``
-    and is correctly detected.
+    判断规则：任意值 > 180 即认为约定为 ``[0, 360)``。真实经度全为正的区域
+    （如 Germany 5..15）存在歧义，但归一化对它是 no-op；真实经度含负值的区域
+    （如 Portugal、Ireland、Chile）在 ``[0, 360)`` 中会存为 > 180，因此可被正确识别。
     """
     arr = np.asarray(grid_lon, dtype=np.float64)
     return bool(arr.size and float(np.nanmax(arr)) > 180.0)
 
 
 def normalize_grid_lon(grid_lon) -> np.ndarray:
-    """Normalise a grid longitude axis to ``[-180, 180)`` (per-file detection).
+    """将网格经度轴归一化到 ``[-180, 180)``（按文件检测）。
 
-    No-op if the input is already ``[-180, 180)``; converts ``[0, 360)``
-    (detected when any value > 180) to ``[-180, 180)``.
+    若输入已经是 ``[-180, 180)`` 则不变；若检测到 ``[0, 360)``（任意值 > 180），
+    则转换到 ``[-180, 180)``。
     """
     arr = np.asarray(grid_lon, dtype=np.float64)
     return lon_to_180(arr) if is_lon_360(arr) else arr
 
 
 # ---------------------------------------------------------------------------
-# Nearest-cell lookup
+# 最近网格查找
 # ---------------------------------------------------------------------------
 
 def nearest_index_regular(grid_lat, grid_lon_180, sta_lat, sta_lon_180):
-    """Nearest cell on a regular 1D lat/lon grid.
+    """规则一维经纬度网格上的最近网格单元。
 
-    Longitude uses circular distance so the ±180° seam (e.g. Spain, Ireland,
-    Alaska) is handled correctly.
+    经度使用环形距离，因此可以正确处理 ±180° 接缝附近的区域（如 Spain、Ireland、Alaska）。
 
-    Parameters
-    ----------
+    参数
+    ----
     grid_lat, grid_lon_180 : (n_lat,) (n_lon,)  grid coordinates; longitude
-        already normalised to ``[-180, 180)``.
-    sta_lat, sta_lon_180 : (n_sta,)  station coordinates (longitude in
-        ``[-180, 180)``).
+        网格坐标；经度已归一化到 ``[-180, 180)``。
+    sta_lat, sta_lon_180 : (n_sta,)  场站坐标（经度为 ``[-180, 180)``）。
 
-    Returns
-    -------
-    lat_idx, lon_idx : (n_sta,) int64  index into the 1D grid axes.
-    dist : (n_sta,) float64  nearest-neighbour distance in degrees,
-        ``max(|dlat|, |dlon_circular|)``.
+    返回
+    ----
+    lat_idx, lon_idx : (n_sta,) int64  一维网格轴索引。
+    dist : (n_sta,) float64  最近邻距离（单位：度），即
+        ``max(|dlat|, |dlon_circular|)``。
     """
     grid_lat = np.asarray(grid_lat, dtype=np.float64)
     grid_lon = np.asarray(grid_lon_180, dtype=np.float64)
@@ -153,15 +147,15 @@ def nearest_index_regular(grid_lat, grid_lon_180, sta_lat, sta_lon_180):
 
 
 def nearest_index_2d(lat2d, lon2d_180, sta_lat, sta_lon_180):
-    """Nearest cell on a rotated-pole 2D grid (NAM-12).
+    """旋转极点二维网格（NAM-12）上的最近网格单元。
 
-    Flattens the 2D geographic ``lat``/``lon`` auxiliary coordinates and queries
-    a cKDTree (falls back to brute-force argmin if scipy is unavailable).
+    将二维地理辅助坐标 ``lat``/``lon`` 展平后查询 cKDTree；如果 scipy 不可用，
+    则退回到暴力 argmin。
 
-    Returns
-    -------
-    idx0, idx1 : (n_sta,) int64  indices into the (rlat, rlon) grid.
-    dist : (n_sta,) float64  planar distance in degrees.
+    返回
+    ----
+    idx0, idx1 : (n_sta,) int64  指向 (rlat, rlon) 网格的索引。
+    dist : (n_sta,) float64  平面距离（单位：度）。
     """
     lat2d = np.asarray(lat2d, dtype=np.float64)
     lon2d = np.asarray(lon2d_180, dtype=np.float64)
@@ -189,13 +183,13 @@ def nearest_index_2d(lat2d, lon2d_180, sta_lat, sta_lon_180):
 
 
 # ---------------------------------------------------------------------------
-# Country shapes & station filtering
+# 国家边界与场站筛选
 # ---------------------------------------------------------------------------
 
 def load_country_shapes(shp_path):
-    """Read a Natural Earth admin-0 countries shapefile → ``{NAME: geometry}``.
+    """读取 Natural Earth admin-0 国家边界 shapefile → ``{NAME: geometry}``。
 
-    Uses pyshp (``shapefile``) + shapely, matching the verified reference.
+    使用 pyshp（``shapefile``）+ shapely，与已验证的参考实现一致。
     """
     sf = shapefile.Reader(shp_path)
     fields = [f[0] for f in sf.fields[1:]]
@@ -208,12 +202,12 @@ def load_country_shapes(shp_path):
 
 
 def bcsd_region_to_ne_name(region_dir: str) -> str:
-    """Map a BCSD region directory name to its Natural Earth ``NAME``."""
+    """将 BCSD 区域目录名映射到 Natural Earth ``NAME``。"""
     return BCSD_REGION_TO_NAME.get(region_dir, region_dir)
 
 
 def infer_scenario_from_csv(csv_path: str) -> str:
-    """Infer the SSP scenario code (``ssp126``/…) from a station CSV filename."""
+    """从场站 CSV 文件名推断 SSP 情景代码（``ssp126``/…）。"""
     basename = os.path.basename(csv_path)
     for ssp_name, ssp_code in SSP_MAP.items():
         if ssp_name in basename:
@@ -224,11 +218,11 @@ def infer_scenario_from_csv(csv_path: str) -> str:
 
 
 def load_stations(csv_path) -> pd.DataFrame:
-    """Load a station siting CSV.
+    """读取场站选址 CSV。
 
-    Expected columns: ``year, type, lon, lat, capacity_gw``.
-    Returns a DataFrame with ``lon`` normalised to ``[-180, 180)`` and numeric
-    dtypes.  Rows with missing lon/lat are dropped.
+    期望列：``year, type, lon, lat, capacity_gw``。
+    返回的 DataFrame 中 ``lon`` 已归一化到 ``[-180, 180)``，并转换为数值类型。
+    缺少 lon/lat 的行会被删除。
     """
     df = pd.read_csv(csv_path)
     df["lon"] = lon_to_180(pd.to_numeric(df["lon"], errors="coerce"))
@@ -241,12 +235,12 @@ def load_stations(csv_path) -> pd.DataFrame:
 
 def filter_stations_for_country(stations_df: pd.DataFrame, country_geom,
                                 stype: str) -> pd.DataFrame:
-    """Select stations of ``stype`` inside ``country_geom`` and deduplicate.
+    """选择 ``country_geom`` 内类型为 ``stype`` 的场站，并去重。
 
-    Dedup keeps ``(lon, lat)`` unique with ``activation_year = min(year)`` over
-    the 2030/2040/2050 nesting (a station activated earlier also exists later).
+    针对 2030/2040/2050 的嵌套关系，去重时保留唯一 ``(lon, lat)``，并取
+    ``activation_year = min(year)``（较早投产的场站在后续年份也存在）。
 
-    Returns columns: ``lon, lat, type, activation_year, capacity_gw``.
+    返回列：``lon, lat, type, activation_year, capacity_gw``。
     """
     if stations_df.empty:
         return stations_df.assign(activation_year=pd.Series(dtype="int64"))
@@ -275,22 +269,22 @@ def filter_stations_for_country(stations_df: pd.DataFrame, country_geom,
 
 
 # ---------------------------------------------------------------------------
-# Match result + gather
+# 匹配结果与抽取
 # ---------------------------------------------------------------------------
 
 @dataclass
 class StationMatch:
-    """Result of matching a set of stations to one grid.
+    """一组场站匹配到一个网格后的结果。
 
-    Attributes
-    ----------
-    stations : DataFrame  filtered stations (lon/lat in [-180,180), type,
-        activation_year, capacity_gw).
-    idx0 : (n_sta,) int64  lat index (regular) or rlat index (rotated).
-    idx1 : (n_sta,) int64  lon index (regular) or rlon index (rotated).
-    dist_deg : (n_sta,) float64  nearest-cell distance.
-    valid : (n_sta,) bool  ``dist_deg <= max_dist``.
-    grid_kind : str  ``"regular_latlon"`` or ``"rotated_pole"``.
+    属性
+    ----
+    stations : DataFrame  筛选后的场站（lon/lat 为 [-180,180)，含 type、
+        activation_year、capacity_gw）。
+    idx0 : (n_sta,) int64  规则网格的 lat 索引，或旋转网格的 rlat 索引。
+    idx1 : (n_sta,) int64  规则网格的 lon 索引，或旋转网格的 rlon 索引。
+    dist_deg : (n_sta,) float64  最近网格距离。
+    valid : (n_sta,) bool  ``dist_deg <= max_dist``。
+    grid_kind : str  ``"regular_latlon"`` 或 ``"rotated_pole"``。
     """
 
     stations: pd.DataFrame
@@ -306,7 +300,7 @@ class StationMatch:
 
 def match_regular(grid_lat, grid_lon, stations_df: pd.DataFrame,
                   max_dist: float = MAX_DIST_DEG) -> StationMatch:
-    """Match stations to a regular lat/lon grid (per-file lon normalisation)."""
+    """将场站匹配到规则经纬度网格（按文件做经度归一化）。"""
     grid_lon_180 = normalize_grid_lon(grid_lon)
     lat_idx, lon_idx, dist = nearest_index_regular(
         grid_lat, grid_lon_180,
@@ -322,7 +316,7 @@ def match_regular(grid_lat, grid_lon, stations_df: pd.DataFrame,
 
 def match_2d(lat2d, lon2d, stations_df: pd.DataFrame,
              max_dist: float = MAX_DIST_DEG) -> StationMatch:
-    """Match stations to a rotated-pole 2D grid (NAM-12)."""
+    """将场站匹配到旋转极点二维网格（NAM-12）。"""
     lon2d_180 = normalize_grid_lon(np.asarray(lon2d))
     idx0, idx1, dist = nearest_index_2d(
         lat2d, lon2d_180,
@@ -337,17 +331,17 @@ def match_2d(lat2d, lon2d, stations_df: pd.DataFrame,
 
 
 def gather_to_stations(arr3d, match: StationMatch) -> np.ndarray:
-    """Gather a ``(time, idx0, idx1)`` array to ``(time, n_sta)``.
+    """将 ``(time, idx0, idx1)`` 数组抽取为 ``(time, n_sta)``。
 
-    Fancy-indexes the matched cells.  Stations flagged ``valid=False``
-    (``dist > max_dist``) are still gathered but should be masked downstream.
+    使用高级索引抽取已匹配网格单元。``valid=False``（``dist > max_dist``）的场站
+    仍会被抽取，但应在后续流程中被掩膜。
     """
     arr3d = np.asarray(arr3d)
     return arr3d[:, match.idx0, match.idx1]
 
 
 # ---------------------------------------------------------------------------
-# Station-level signal writer (shared by Pipeline A and Pipeline B)
+# 场站级信号写出（Pipeline A 与 Pipeline B 共用）
 # ---------------------------------------------------------------------------
 
 def write_station_signals(
@@ -370,12 +364,12 @@ def write_station_signals(
     activation_mask_on: bool,
     compress_level: int = 4,
 ) -> None:
-    """Write a station-level extreme-signal NetCDF.
+    """写出场站级极端天气信号 NetCDF。
 
-    Layout: dims ``(time, station)``; one ``signal_<event>(time, station)``
-    ``int8`` per event plus per-station metadata (lon/lat/type/capacity_gw/
-    activation_year/match_dist_deg).  Both pipelines write identical files so
-    their outputs are directly comparable.
+    布局：维度为 ``(time, station)``；每个事件对应一个
+    ``signal_<event>(time, station)`` ``int8`` 变量，并包含场站元数据
+    （lon/lat/type/capacity_gw/activation_year/match_dist_deg）。两个 pipeline
+    写出的文件结构一致，因此输出可以直接比较。
     """
     import xarray as xr  # local import: xarray only needed for writing
 

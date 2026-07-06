@@ -1,10 +1,10 @@
-"""Adapter for CMIP6–ERA5Land BCSD data (most regions / countries).
+"""CMIP6–ERA5Land BCSD 数据适配器（多数区域/国家）。
 
-File layout::
+文件布局::
 
     {data_dir}/{model}/{region}/{model}/{var}_3h_bcsd_on_0p1deg_{region}_{model}_{scenario}_*.nc
 
-Variables: pr, rsds, tas, uas, vas.  Three-hourly, regular lat/lon grid.
+变量：pr、rsds、tas、uas、vas。时间分辨率为 3 小时，空间网格为规则经纬度。
 """
 from __future__ import annotations
 
@@ -47,10 +47,10 @@ logger = logging.getLogger(__name__)
 
 
 def _regional_bcsd_pr_units(units: str | None) -> str | None:
-    """Return the precipitation unit for regional BCSD outputs.
+    """返回 regional BCSD 输出的降水单位。
 
-    Step 6 BCSD files may drop the ``units`` attribute, but ``pr_bcsd`` values
-    are precipitation fluxes produced as kg m-2 s-1 (equivalent to mm s-1).
+    Step 6 的 BCSD 文件可能丢失 ``units`` 属性，但 ``pr_bcsd`` 数值是以
+    kg m-2 s-1（等价于 mm s-1）表示的降水通量。
     """
     if isinstance(units, bytes):
         units = units.decode("utf-8")
@@ -60,7 +60,7 @@ def _regional_bcsd_pr_units(units: str | None) -> str | None:
 
 
 class RegionalBcsdAdapter(WeatherAdapter):
-    """Adapter for regional CMIP6–ERA5Land BCSD data."""
+    """regional CMIP6–ERA5Land BCSD 数据适配器。"""
 
     def __init__(self, args) -> None:
         self.data_dir = args.data_dir
@@ -72,7 +72,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         self.allow_missing_optional = getattr(args, "allow_missing_optional", False)
 
     # ------------------------------------------------------------------
-    # Task iteration
+    # 任务迭代
     # ------------------------------------------------------------------
 
     def iter_tasks(self, args) -> list[dict]:
@@ -98,7 +98,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         return [self.region]
 
     # ------------------------------------------------------------------
-    # Output paths
+    # 输出路径
     # ------------------------------------------------------------------
 
     def _base_dir(self, task: dict, tech: str) -> Path:
@@ -123,7 +123,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Shared helpers
+    # 共享辅助函数
     # ------------------------------------------------------------------
 
     def _open_and_prepare(
@@ -134,7 +134,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         lat_name: str,
         lon_name: str,
     ) -> tuple[xr.DataArray, str, str | None]:
-        """Open file, resolve variable name, return prepared DataArray + units."""
+        """打开文件、解析变量名，并返回预处理后的 DataArray 与单位。"""
         fpath = find_bcsd_file(
             task["data_dir"], task["model"], task["region"],
             task["scenario"], var,
@@ -147,7 +147,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         return da, str(fpath), units
 
     def _discover_coords(self, task: dict) -> tuple[str, str, str]:
-        """Discover coordinate names from a sample file."""
+        """从样例文件中发现坐标名。"""
         fpath = find_bcsd_file(
             task["data_dir"], task["model"], task["region"],
             task["scenario"], "rsds",
@@ -164,7 +164,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         return da.isel({time_name: idx})
 
     # ------------------------------------------------------------------
-    # Wind weather
+    # 风电气象
     # ------------------------------------------------------------------
 
     def load_wind_weather(self, task: dict) -> WeatherBundle:
@@ -173,31 +173,31 @@ class RegionalBcsdAdapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Required: uas, vas
+        # 必需：uas、vas
         uas_da, f_uas, uas_units = self._open_and_prepare(task, "uas", time_name, lat_name, lon_name)
         vas_da, f_vas, vas_units = self._open_and_prepare(task, "vas", time_name, lat_name, lon_name)
         source_files.extend([f_uas, f_vas])
 
-        # Optional: tas (needed for high_temp signal)
+        # 可选：tas（high_temp 信号需要）
         try:
             tas_da, f_tas, tas_units = self._open_and_prepare(task, "tas", time_name, lat_name, lon_name)
             source_files.append(f_tas)
         except FileNotFoundError:
             tas_da = None
             tas_units = None
-            skipped_inputs["temp_C"] = "tas file not found"
+            skipped_inputs["temp_C"] = "未找到 tas 文件"
 
-        # Filter to target year
+        # 筛选目标年份
         uas_da = self._filter_year(uas_da, time_name, year)
         vas_da = self._filter_year(vas_da, time_name, year)
         wind_time = uas_da[time_name].values
 
-        # Interpolate tas to wind time axis if needed
+        # 必要时将 tas 插值到风速时间轴
         if tas_da is not None:
             tas_da = self._filter_year(tas_da, time_name, year)
             tas_time = tas_da[time_name].values
             if not np.array_equal(tas_time, wind_time):
-                logger.info("Interpolating tas to wind time axis")
+                logger.info("将 tas 插值到风速时间轴")
                 temp_C = tas_to_celsius(
                     interp_instantaneous_to_target(tas_da, time_name, wind_time),
                     tas_units,
@@ -214,13 +214,13 @@ class RegionalBcsdAdapter(WeatherAdapter):
             temp_C = None
             time_alignment = "uas/vas instantaneous native"
 
-        # Wind speed from components
+        # 由分量计算风速
         wind_ms = np.sqrt(
             uas_da.values.astype(np.float32) ** 2
             + vas_da.values.astype(np.float32) ** 2
         )
 
-        # Build dataset
+        # 构建数据集
         ds = xr.Dataset(
             {
                 "wind_ms": xr.DataArray(wind_ms, dims=(time_name, lat_name, lon_name)),
@@ -234,11 +234,11 @@ class RegionalBcsdAdapter(WeatherAdapter):
         if temp_C is not None:
             ds["temp_C"] = xr.DataArray(temp_C, dims=(time_name, lat_name, lon_name))
 
-        # Mark unavailable inputs
-        skipped_inputs.setdefault("rh_pct", "no humidity data in BCSD")
-        skipped_inputs.setdefault("dust_aod", "no dust data in BCSD")
-        skipped_inputs.setdefault("rsds", "not used for wind signals")
-        skipped_inputs.setdefault("precip_mmh", "not used for wind signals")
+        # 标记不可用输入
+        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
+        skipped_inputs.setdefault("rsds", "风电信号不使用该变量")
+        skipped_inputs.setdefault("precip_mmh", "风电信号不使用该变量")
 
         return WeatherBundle(
             source="regional_bcsd",
@@ -260,7 +260,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Solar weather
+    # 光伏气象
     # ------------------------------------------------------------------
 
     def load_solar_weather(self, task: dict) -> WeatherBundle:
@@ -269,25 +269,25 @@ class RegionalBcsdAdapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Required: rsds (solar target time axis)
+        # 必需：rsds（光伏目标时间轴）
         rsds_da, f_rsds, rsds_units = self._open_and_prepare(task, "rsds", time_name, lat_name, lon_name)
         source_files.append(f_rsds)
         rsds_da = self._filter_year(rsds_da, time_name, year)
         target_times = rsds_da[time_name].values
 
-        # Required: tas
+        # 必需：tas
         tas_da, f_tas, tas_units = self._open_and_prepare(task, "tas", time_name, lat_name, lon_name)
         source_files.append(f_tas)
         tas_da = self._filter_year(tas_da, time_name, year)
 
-        # Required: uas, vas
+        # 必需：uas、vas
         uas_da, f_uas, uas_units = self._open_and_prepare(task, "uas", time_name, lat_name, lon_name)
         vas_da, f_vas, vas_units = self._open_and_prepare(task, "vas", time_name, lat_name, lon_name)
         source_files.extend([f_uas, f_vas])
         uas_da = self._filter_year(uas_da, time_name, year)
         vas_da = self._filter_year(vas_da, time_name, year)
 
-        # Optional: pr
+        # 可选：pr
         pr_da = None
         pr_units = None
         try:
@@ -296,11 +296,11 @@ class RegionalBcsdAdapter(WeatherAdapter):
             pr_da = self._filter_year(pr_da, time_name, year)
         except FileNotFoundError:
             if not self.allow_missing_optional:
-                logger.warning("pr file not found for %s/%s — precipitation events will be skipped",
+                logger.warning("%s/%s 未找到 pr 文件，将跳过降水事件",
                                task["model"], task["region"])
-            skipped_inputs["precip_mmh"] = "pr file not found"
+            skipped_inputs["precip_mmh"] = "未找到 pr 文件"
 
-        # Validate spatial grids
+        # 校验空间网格
         validate_same_spatial_grid(
             rsds_da.to_dataset(name="rsds"),
             {"tas": tas_da.to_dataset(name="tas"),
@@ -309,14 +309,14 @@ class RegionalBcsdAdapter(WeatherAdapter):
             lat_name, lon_name,
         )
 
-        # Interpolate instantaneous variables to rsds time axis (Scheme 4)
+        # 将瞬时变量插值到 rsds 时间轴（方案 4）
         tas_time = tas_da[time_name].values
         uas_time = uas_da[time_name].values
         need_interp_tas = not np.array_equal(tas_time, target_times)
         need_interp_wind = not np.array_equal(uas_time, target_times)
 
         if need_interp_tas:
-            logger.info("Interpolating tas to rsds time axis")
+            logger.info("将 tas 插值到 rsds 时间轴")
             temp_C = tas_to_celsius(
                 interp_instantaneous_to_target(tas_da, time_name, target_times),
                 tas_units,
@@ -326,7 +326,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
             temp_C = tas_to_celsius(tas_da.values, tas_units, allow_inference=self.allow_unit_inference)
 
         if need_interp_wind:
-            logger.info("Interpolating uas/vas to rsds time axis")
+            logger.info("将 uas/vas 插值到 rsds 时间轴")
             uas_interp = interp_instantaneous_to_target(uas_da, time_name, target_times)
             vas_interp = interp_instantaneous_to_target(vas_da, time_name, target_times)
             wind_ms = np.sqrt(uas_interp ** 2 + vas_interp ** 2)
@@ -336,14 +336,14 @@ class RegionalBcsdAdapter(WeatherAdapter):
                 + vas_da.values.astype(np.float32) ** 2
             )
 
-        # rsds unit conversion (BCSD rsds is typically already W m-2)
+        # rsds 单位转换（BCSD rsds 通常已经是 W m-2）
         rsds_wm2 = rsds_to_wm2(
             rsds_da.values, rsds_units,
             timestep_seconds=3 * 3600,
             allow_inference=self.allow_unit_inference,
         )
 
-        # pr handling
+        # pr 处理
         precip_mmh = None
         if pr_da is not None:
             pr_time = pr_da[time_name].values
@@ -359,7 +359,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
                 allow_inference=self.allow_unit_inference,
             )
 
-        # Build dataset
+        # 构建数据集
         data_vars = {
             "temp_C": xr.DataArray(temp_C, dims=(time_name, lat_name, lon_name)),
             "wind_ms": xr.DataArray(wind_ms, dims=(time_name, lat_name, lon_name)),
@@ -377,9 +377,9 @@ class RegionalBcsdAdapter(WeatherAdapter):
             },
         )
 
-        # Mark unavailable inputs
-        skipped_inputs.setdefault("rh_pct", "no humidity data in BCSD")
-        skipped_inputs.setdefault("dust_aod", "no dust data in BCSD")
+        # 标记不可用输入
+        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
 
         interp_desc = []
         if need_interp_tas:

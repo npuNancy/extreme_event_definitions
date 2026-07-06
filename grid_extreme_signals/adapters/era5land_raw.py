@@ -1,17 +1,16 @@
-"""Adapter for raw ERA5-Land global hourly data.
+"""ERA5-Land 全球逐小时原始数据适配器。
 
-Key challenges:
-  - ``tp`` and ``ssrd`` are **daily accumulated** quantities requiring deaccumulation
-    with cross-month boundary handling.
-  - Global 0.1° grid is too large to load at once → process per month.
-  - Relative humidity from ``t2m`` / ``d2m`` via Magnus formula.
-  - Optional MERRA-2 dust via ``--dust_dir``.
+主要难点：
+  - ``tp`` 和 ``ssrd`` 是**日累计**变量，需要解累计并处理跨月边界。
+  - 全球 0.1° 网格过大，不能一次性加载，因此按月处理。
+  - 通过 Magnus 公式由 ``t2m`` / ``d2m`` 计算相对湿度。
+  - 可通过 ``--dust_dir`` 选择性接入 MERRA-2 沙尘数据。
 
-File layout::
+文件布局::
 
     {data_dir}/ERA5_land/global/{var}/{var}_{YYYY}_{MM}.nc
 
-Variables: t2m, u10, v10, tp, ssrd, d2m.
+变量：t2m、u10、v10、tp、ssrd、d2m。
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
-# ERA5-Land deaccumulation (ONLY used by this adapter)
+# ERA5-Land 解累计（仅此适配器使用）
 # =====================================================================
 
 def deaccumulate_era5land(
@@ -46,26 +45,26 @@ def deaccumulate_era5land(
     *,
     missing_boundary_policy: str = "zero",
 ) -> np.ndarray:
-    """Convert ERA5-Land daily accumulated values to hourly increments.
+    """将 ERA5-Land 日累计量转换为逐小时增量。
 
     Parameters
     ----------
     current_accum : np.ndarray
-        Shape ``(T, ...)`` — accumulated values for the current month.
+        形状 ``(T, ...)``，当前月份的累计值。
     hours : np.ndarray
-        Shape ``(T,)`` — integer hours (0–23) for each time step.
+        形状 ``(T,)``，每个时间步对应的整点小时（0–23）。
     prev_boundary : np.ndarray or None
-        Shape ``(...)`` — last accumulated value from the previous month.
-        If ``None`` and the first step is not 01:00, the policy determines behavior.
+        形状 ``(...)``，上一月最后一个累计值。若为 ``None`` 且首个时间步不是 01:00，
+        则由 missing_boundary_policy 决定处理方式。
     missing_boundary_policy : str
-        ``"zero"`` — set first hour increment to 0 (default).
-        ``"nan"`` — set to NaN.
-        ``"current"`` — use current cumulative value.
+        ``"zero"``：首小时增量置为 0（默认）。
+        ``"nan"``：首小时增量置为 NaN。
+        ``"current"``：使用当前累计值。
 
     Returns
     -------
     np.ndarray
-        Shape ``(T, ...)`` — hourly increments (non-negative).
+        形状 ``(T, ...)``，逐小时非负增量。
     """
     cur = current_accum.astype(np.float32)
     T = cur.shape[0]
@@ -74,7 +73,7 @@ def deaccumulate_era5land(
 
     inc = np.empty_like(cur)
 
-    # First time step
+    # 第一个时间步
     has_prev = prev_boundary is not None
     if has_prev:
         inc[0] = cur[0] if hours[0] == 1 else (cur[0] - prev_boundary)
@@ -82,7 +81,7 @@ def deaccumulate_era5land(
         if hours[0] == 1:
             inc[0] = cur[0]
         elif missing_boundary_policy == "zero":
-            logger.warning("First hour is not 01:00 and no previous boundary — increment set to 0")
+            logger.warning("首个小时不是 01:00 且没有前月边界，增量置为 0")
             inc[0] = 0.0
         elif missing_boundary_policy == "nan":
             inc[0] = np.nan
@@ -91,17 +90,17 @@ def deaccumulate_era5land(
         else:
             raise ValueError(f"Unsupported missing_boundary_policy={missing_boundary_policy!r}")
 
-    # Remaining steps
+    # 后续时间步
     if T > 1:
         diff = cur[1:] - cur[:-1]
         reset = hours[1:] == 1
-        # Broadcast reset over spatial dims
+        # 将 reset 广播到空间维度
         for _ in range(cur.ndim - 1):
             reset = reset[:, None]
         reset = np.broadcast_to(reset, diff.shape)
         inc[1:] = np.where(reset, cur[1:], diff)
 
-    # Defensive: negative increments from data anomalies → use current value
+    # 防御性处理：数据异常导致负增量时使用当前值
     neg = inc < 0
     if np.any(neg):
         inc = np.where(neg, cur, inc)
@@ -124,17 +123,17 @@ def load_previous_accum_boundary(
     lat_name: str,
     lon_name: str,
 ) -> np.ndarray | None:
-    """Read the last time step of the previous month for deaccumulation boundary."""
+    """读取上一月最后一个时间步，作为解累计边界。"""
     py, pm = _previous_year_month(year, month)
     root = Path(data_dir) / "ERA5_land" / "global" / var
     prev_file = root / f"{var}_{py:04d}_{pm:02d}.nc"
     if not prev_file.exists():
-        logger.warning("Previous month file not found: %s", prev_file)
+        logger.warning("未找到上月文件：%s", prev_file)
         return None
     with xr.open_dataset(str(prev_file)) as ds:
         var_name = _get_era5land_var_name(ds, var)
         da = ds[var_name]
-        # Squeeze extra dims
+        # 压缩额外维度
         for dim in list(da.dims):
             if dim not in {time_name, lat_name, lon_name} and da.sizes[dim] == 1:
                 da = da.isel({dim: 0}, drop=True)
@@ -143,7 +142,7 @@ def load_previous_accum_boundary(
 
 
 def _get_era5land_var_name(ds: xr.Dataset, var: str) -> str:
-    """Resolve variable name in ERA5-Land file."""
+    """解析 ERA5-Land 文件中的变量名。"""
     if var in ds.data_vars:
         return var
     if len(ds.data_vars) == 1:
@@ -152,11 +151,11 @@ def _get_era5land_var_name(ds: xr.Dataset, var: str) -> str:
 
 
 # =====================================================================
-# Adapter class
+# 适配器类
 # =====================================================================
 
 class Era5LandRawAdapter(WeatherAdapter):
-    """Adapter for raw ERA5-Land global hourly data."""
+    """ERA5-Land 全球逐小时原始数据适配器。"""
 
     def __init__(self, args) -> None:
         self.data_dir = args.data_dir
@@ -166,7 +165,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         self.allow_missing_optional = getattr(args, "allow_missing_optional", False)
 
     # ------------------------------------------------------------------
-    # Task iteration (per month)
+    # 任务迭代（按月）
     # ------------------------------------------------------------------
 
     def iter_tasks(self, args) -> list[dict]:
@@ -183,7 +182,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         return tasks
 
     # ------------------------------------------------------------------
-    # Output paths
+    # 输出路径
     # ------------------------------------------------------------------
 
     def _base_dir(self, task: dict, tech: str) -> Path:
@@ -208,11 +207,11 @@ class Era5LandRawAdapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # File helpers
+    # 文件辅助函数
     # ------------------------------------------------------------------
 
     def _era5land_file(self, var: str, year: int, month: int) -> Path:
-        """Construct ERA5-Land monthly file path."""
+        """构造 ERA5-Land 月文件路径。"""
         if var == "d2m" and self.d2m_root:
             root = Path(self.d2m_root)
         else:
@@ -228,13 +227,13 @@ class Era5LandRawAdapter(WeatherAdapter):
         lat_name: str,
         lon_name: str,
     ) -> tuple[xr.DataArray, str | None]:
-        """Open an ERA5-Land monthly file and return prepared DataArray."""
+        """打开 ERA5-Land 月文件，并返回预处理后的 DataArray。"""
         fpath = self._era5land_file(var, year, month)
         ds = xr.open_dataset(str(fpath))
         var_name = _get_era5land_var_name(ds, var)
         units = ds[var_name].attrs.get("units", None)
         da = ds[var_name]
-        # Squeeze extra dims
+        # 压缩额外维度
         for dim in list(da.dims):
             if dim not in {time_name, lat_name, lon_name} and da.sizes[dim] == 1:
                 da = da.isel({dim: 0}, drop=True)
@@ -252,11 +251,11 @@ class Era5LandRawAdapter(WeatherAdapter):
         return time_name, lat_name, lon_name
 
     # ------------------------------------------------------------------
-    # Shared weather loading
+    # 共享气象加载
     # ------------------------------------------------------------------
 
     def _load_weather(self, task: dict, tech: str) -> WeatherBundle:
-        """Core weather loading for both wind and solar (same time axis for ERA5-Land)."""
+        """风电和光伏共用的核心气象加载逻辑（ERA5-Land 使用同一时间轴）。"""
         year = task["year"]
         month = task["month"]
         source_files = []
@@ -264,7 +263,7 @@ class Era5LandRawAdapter(WeatherAdapter):
 
         time_name, lat_name, lon_name = self._discover_coords(year, month)
 
-        # --- Load variables ---
+        # --- 加载变量 ---
         t2m_da, _ = self._open_var("t2m", year, month, time_name, lat_name, lon_name)
         source_files.append(str(self._era5land_file("t2m", year, month)))
 
@@ -274,7 +273,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         v10_da, _ = self._open_var("v10", year, month, time_name, lat_name, lon_name)
         source_files.append(str(self._era5land_file("v10", year, month)))
 
-        # Deaccumulate tp (m → mm)
+        # 解累计 tp（m → mm）
         tp_da, tp_units = self._open_var("tp", year, month, time_name, lat_name, lon_name)
         source_files.append(str(self._era5land_file("tp", year, month)))
 
@@ -285,7 +284,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         tp_inc = deaccumulate_era5land(tp_da.values, hours, tp_prev)
         precip_mmh = tp_inc * 1000.0  # m → mm
 
-        # Deaccumulate ssrd (J/m² → W/m²)
+        # 解累计 ssrd（J/m² → W/m²）
         ssrd_da, _ = self._open_var("ssrd", year, month, time_name, lat_name, lon_name)
         source_files.append(str(self._era5land_file("ssrd", year, month)))
 
@@ -295,27 +294,27 @@ class Era5LandRawAdapter(WeatherAdapter):
         ssrd_inc = deaccumulate_era5land(ssrd_da.values, hours, ssrd_prev)
         rsds_wm2 = ssrd_inc / 3600.0  # J/m² → W/m² (per hour)
 
-        # Relative humidity from t2m/d2m
+        # 由 t2m/d2m 计算相对湿度
         rh_pct = None
         try:
             d2m_da, _ = self._open_var("d2m", year, month, time_name, lat_name, lon_name)
             source_files.append(str(self._era5land_file("d2m", year, month)))
             rh_pct = magnus_rh(t2m_da.values, d2m_da.values)
         except (FileNotFoundError, KeyError):
-            skipped_inputs["rh_pct"] = "d2m file not found"
-            logger.warning("d2m file not found — humidity events will be skipped")
+            skipped_inputs["rh_pct"] = "未找到 d2m 文件"
+            logger.warning("未找到 d2m 文件，将跳过湿度事件")
 
-        # Temperature in °C
+        # 温度（°C）
         temp_C = t2m_da.values.astype(np.float32) - 273.15
 
-        # Wind speed from components
+        # 由分量计算风速
         wind_ms = np.sqrt(
             u10_da.values.astype(np.float32) ** 2
             + v10_da.values.astype(np.float32) ** 2,
         )
 
-        # Build dataset
-        # Rename coords to canonical names for consistency
+        # 构建数据集
+        # 为保持一致性，将坐标重命名为规范名称
         coord_time = t2m_da[time_name]
         coord_lat = t2m_da[lat_name]
         coord_lon = t2m_da[lon_name]
@@ -330,7 +329,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         if rh_pct is not None:
             data_vars["rh_pct"] = xr.DataArray(rh_pct, dims=dims)
 
-        # Optional dust
+        # 可选沙尘
         dust_aod = None
         if self.dust_dir:
             dust_aod = self._load_dust(task, time_name, lat_name, lon_name, t2m_da)
@@ -338,9 +337,9 @@ class Era5LandRawAdapter(WeatherAdapter):
                 data_vars["dust_aod"] = xr.DataArray(dust_aod, dims=dims)
                 source_files.append("MERRA-2 dust data")
             else:
-                skipped_inputs["dust_aod"] = "dust files not found"
+                skipped_inputs["dust_aod"] = "未找到沙尘文件"
         else:
-            skipped_inputs["dust_aod"] = "dust_dir not configured"
+            skipped_inputs["dust_aod"] = "未配置 dust_dir"
 
         ds = xr.Dataset(
             data_vars,
@@ -378,23 +377,23 @@ class Era5LandRawAdapter(WeatherAdapter):
         lon_name: str,
         ref_da: xr.DataArray,
     ) -> np.ndarray | None:
-        """Load MERRA-2 dust AOD and regrid to ERA5-Land grid.
+        """加载 MERRA-2 沙尘 AOD，并重网格到 ERA5-Land 网格。
 
-        Phase 1: simple nearest-neighbor regridding via xarray.interp.
+        Phase 1：通过 xarray.interp 做简单最近邻重网格。
         """
         import glob as _glob
         year = task["year"]
         month = task["month"]
         dust_dir = Path(self.dust_dir)
 
-        # Find daily MERRA-2 files for this month
+        # 查找该月逐日 MERRA-2 文件
         pattern = str(dust_dir / f"{year}" / f"{month:02d}" / f"MERRA2.tavg1_2d_aer_Nx.{year}{month:02d}*.nc4")
         dust_files = sorted(_glob.glob(pattern))
         if not dust_files:
-            logger.warning("No MERRA-2 dust files found: %s", pattern)
+            logger.warning("未找到 MERRA-2 沙尘文件：%s", pattern)
             return None
 
-        # Read and concatenate
+        # 读取并拼接
         datasets = []
         for f in dust_files:
             ds = xr.open_dataset(f)
@@ -405,14 +404,14 @@ class Era5LandRawAdapter(WeatherAdapter):
 
         dust_da = xr.concat(datasets, dim="time")
 
-        # Regrid to ERA5-Land grid via nearest neighbor
+        # 通过最近邻重网格到 ERA5-Land 网格
         era5_lat = ref_da[lat_name].values
         era5_lon = ref_da[lon_name].values
 
-        # MERRA-2 uses lat/lon; adjust longitude convention if needed
+        # MERRA-2 使用 lat/lon；必要时调整经度约定
         merra_lon = dust_da.coords["lon"].values
         if merra_lon.min() < 0 and era5_lon.min() >= 0:
-            # MERRA-2 is [-180,180), ERA5-Land is [0,360)
+            # MERRA-2 为 [-180,180)，ERA5-Land 为 [0,360)
             era5_lon_for_interp = era5_lon.copy()
             era5_lon_for_interp[era5_lon_for_interp > 180] -= 360
         else:
@@ -424,7 +423,7 @@ class Era5LandRawAdapter(WeatherAdapter):
             method="nearest",
         )
 
-        # Align time
+        # 对齐时间
         ref_time = ref_da[time_name].values
         dust_aligned = dust_regridded.interp(
             {list(dust_regridded.dims)[0]: ref_time},
@@ -433,7 +432,7 @@ class Era5LandRawAdapter(WeatherAdapter):
         return dust_aligned.values.astype(np.float32)
 
     # ------------------------------------------------------------------
-    # Wind / Solar (same data, different tech tag)
+    # 风电 / 光伏（同一数据，不同技术标签）
     # ------------------------------------------------------------------
 
     def load_wind_weather(self, task: dict) -> WeatherBundle:

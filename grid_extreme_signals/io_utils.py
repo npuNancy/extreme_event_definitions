@@ -1,7 +1,6 @@
-"""Shared I/O utilities: file discovery, NetCDF variable resolution, atomic write.
+"""共享 I/O 工具：文件发现、NetCDF 变量解析和原子写入。
 
-Patterns are ported from the capacity factor reference scripts in
-``calculate_bcsd_cfs/`` and adapted for extreme weather signal output.
+文件匹配模式移植自 ``calculate_bcsd_cfs/`` 中的容量因子参考脚本，并适配到极端天气信号输出。
 """
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
-# File discovery — regional BCSD
+# 文件发现 — regional BCSD
 # =====================================================================
 
 def find_bcsd_file(
@@ -30,9 +29,9 @@ def find_bcsd_file(
     scenario: str,
     var: str,
 ) -> Path:
-    """Find a BCSD variable file using cascading glob patterns.
+    """使用级联 glob 模式查找 BCSD 变量文件。
 
-    Priority:
+    优先级：
       1. ``{var}_3h_bcsd_on_0p1deg_{region}_{model}_{scenario}_*.nc``
       2. ``{var}_*_{region}_{model}_{scenario}_*.nc``
       3. ``{var}_*{scenario}*.nc``
@@ -47,7 +46,7 @@ def find_bcsd_file(
         files = sorted(glob.glob(pat))
         if files:
             if len(files) > 1:
-                logger.warning("%s matched %d files, using first: %s", var, len(files), files[0])
+                logger.warning("%s 匹配到 %d 个文件，使用第一个：%s", var, len(files), files[0])
             return Path(files[0])
     raise FileNotFoundError(
         f"Cannot find {var} file. Tried:\n  " + "\n  ".join(patterns)
@@ -55,7 +54,7 @@ def find_bcsd_file(
 
 
 # =====================================================================
-# File discovery — China CMFD BCSD
+# 文件发现 — China CMFD BCSD
 # =====================================================================
 
 def find_china_bcsd_file(
@@ -64,9 +63,9 @@ def find_china_bcsd_file(
     scenario: str,
     var: str,
 ) -> Path:
-    """Find a China CMFD BCSD variable file.
+    """查找中国区域 CMFD BCSD 变量文件。
 
-    Priority:
+    优先级：
       1. ``{var}_3h_bcsd_on_0.1deg_china_{scenario}_*.nc``
       2. ``{var}_*china_{scenario}_*.nc``
       3. ``{var}_*{scenario}*.nc``
@@ -81,7 +80,7 @@ def find_china_bcsd_file(
         files = sorted(glob.glob(pat))
         if files:
             if len(files) > 1:
-                logger.warning("%s matched %d files, using first: %s", var, len(files), files[0])
+                logger.warning("%s 匹配到 %d 个文件，使用第一个：%s", var, len(files), files[0])
             return Path(files[0])
     raise FileNotFoundError(
         f"Cannot find {var} file for China CMFD. Tried:\n  " + "\n  ".join(patterns)
@@ -89,7 +88,7 @@ def find_china_bcsd_file(
 
 
 # =====================================================================
-# File discovery — CORDEX NAM-12
+# 文件发现 — CORDEX NAM-12
 # =====================================================================
 
 def find_cordex_var_files(
@@ -101,9 +100,9 @@ def find_cordex_var_files(
     var: str,
     year_range: tuple[int, int],
 ) -> dict[int, Path]:
-    """Find CORDEX NAM-12 per-year files for a variable.
+    """查找某个变量的 CORDEX NAM-12 分年文件。
 
-    Returns ``{year: Path}`` for each year in *year_range* that has a file.
+    对 *year_range* 中每个有文件的年份返回 ``{year: Path}``。
     """
     import re
     base = Path(data_dir) / gcm_model / realization / rcm_model / scenario / var
@@ -117,26 +116,26 @@ def find_cordex_var_files(
             if year_range[0] <= y <= year_range[1]:
                 result[y] = Path(f)
     if not result:
-        # Fallback: try without strict year extraction
+        # 兜底：不做严格年份提取
         for f in files:
-            result[0] = Path(f)  # single-file case
+            result[0] = Path(f)  # 单文件情况
             break
     return result
 
 
 # =====================================================================
-# NetCDF variable name resolution
+# NetCDF 变量名解析
 # =====================================================================
 
 def get_var_name(ds: xr.Dataset, preferred: str, *, use_bcsd_suffix: bool = True) -> str:
-    """Resolve the data variable name in *ds*.
+    """解析 *ds* 中的数据变量名。
 
-    Priority (when *use_bcsd_suffix* is True):
+    优先级（当 *use_bcsd_suffix* 为 True 时）：
       1. ``{preferred}_bcsd``
       2. ``{preferred}``
-      3. the sole data variable (if exactly one)
+      3. 唯一的数据变量（当数据集中刚好只有一个数据变量时）
 
-    When *use_bcsd_suffix* is False, skip step 1.
+    当 *use_bcsd_suffix* 为 False 时，跳过第 1 步。
     """
     if use_bcsd_suffix:
         candidate = f"{preferred}_bcsd"
@@ -153,7 +152,7 @@ def get_var_name(ds: xr.Dataset, preferred: str, *, use_bcsd_suffix: bool = True
 
 
 # =====================================================================
-# Spatial grid validation
+# 空间网格校验
 # =====================================================================
 
 def _coord_values_close(a: np.ndarray, b: np.ndarray, label: str = "", atol: float = 1e-6) -> bool:
@@ -169,7 +168,7 @@ def validate_same_spatial_grid(
     lat_name: str,
     lon_name: str,
 ) -> None:
-    """Raise ``ValueError`` if any *other* dataset has a different lat/lon grid."""
+    """若任一 *other* 数据集的 lat/lon 网格不同，则抛出 ``ValueError``。"""
     ref_lat = ds_ref[lat_name].values
     ref_lon = ds_ref[lon_name].values
     for name, ds in others.items():
@@ -181,7 +180,7 @@ def validate_same_spatial_grid(
 
 
 # =====================================================================
-# DataArray preparation
+# DataArray 预处理
 # =====================================================================
 
 def prepare_dataarray(
@@ -191,7 +190,7 @@ def prepare_dataarray(
     *spatial_names: str,
     use_bcsd_suffix: bool = True,
 ) -> xr.DataArray:
-    """Extract variable, squeeze singleton extra dims, transpose to canonical order."""
+    """提取变量，压缩单元素额外维度，并转置为标准维度顺序。"""
     var = get_var_name(ds, preferred_var, use_bcsd_suffix=use_bcsd_suffix)
     da = ds[var]
     canonical = {time_name, *spatial_names}
@@ -207,11 +206,11 @@ def prepare_dataarray(
 
 
 # =====================================================================
-# Region discovery
+# 区域发现
 # =====================================================================
 
 def is_valid_region_name(name: str) -> bool:
-    """Filter out invalid region directory names."""
+    """过滤无效区域目录名。"""
     return (
         bool(name)
         and not name.startswith("_")
@@ -221,7 +220,7 @@ def is_valid_region_name(name: str) -> bool:
 
 
 def discover_regions(data_dir: str | Path, model: str) -> list[str]:
-    """List valid region subdirectories under ``{data_dir}/{model}/``."""
+    """列出 ``{data_dir}/{model}/`` 下的有效区域子目录。"""
     root = Path(data_dir) / model
     return sorted(
         p.name for p in root.glob("*")
@@ -230,17 +229,17 @@ def discover_regions(data_dir: str | Path, model: str) -> list[str]:
 
 
 # =====================================================================
-# Output file helpers
+# 输出文件辅助函数
 # =====================================================================
 
 def output_complete(nc_path: str | Path) -> bool:
-    """Return True if *nc_path* exists, is readable, and has positive time size."""
+    """若 *nc_path* 存在、可读取且 time 长度为正，则返回 True。"""
     p = Path(nc_path)
     if not p.exists():
         return False
     try:
         with xr.open_dataset(p) as ds:
-            # Check that time dimension exists and is non-empty
+            # 检查 time 维度存在且非空
             time_dims = [d for d in ds.dims if d in ("time", "valid_time")]
             if not time_dims:
                 return False
@@ -250,14 +249,14 @@ def output_complete(nc_path: str | Path) -> bool:
 
 
 def skip_existing(path: str | Path, overwrite: bool) -> bool:
-    """Return True if the output should be skipped (exists and not overwriting)."""
+    """若输出应被跳过（已存在且不覆盖），返回 True。"""
     if overwrite:
         return False
     return output_complete(path)
 
 
 # =====================================================================
-# Atomic write
+# 原子写入
 # =====================================================================
 
 _HAS_NETCDF4 = False
@@ -269,7 +268,7 @@ except ImportError:
 
 
 def _strip_scipy_incompatible(encoding: dict | None) -> dict | None:
-    """Remove encoding keys not supported by the scipy backend."""
+    """移除 scipy 后端不支持的 encoding 键。"""
     if encoding is None or _HAS_NETCDF4:
         return encoding
     cleaned = {}
@@ -284,7 +283,7 @@ def atomic_write_netcdf(
     path: str | Path,
     encoding: dict | None = None,
 ) -> None:
-    """Write *ds* to *path* atomically (tmp file + os.replace)."""
+    """以原子方式将 *ds* 写到 *path*（临时文件 + os.replace）。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.parent / f".{p.name}.tmp.{os.getpid()}"
@@ -293,7 +292,7 @@ def atomic_write_netcdf(
         ds.to_netcdf(tmp, encoding=enc)
         os.replace(tmp, p)
     except BaseException:
-        # Clean up partial file
+        # 清理未完成文件
         if tmp.exists():
             try:
                 tmp.unlink()
@@ -303,7 +302,7 @@ def atomic_write_netcdf(
 
 
 # =====================================================================
-# Signal / weather file writers
+# 信号/气象文件写出
 # =====================================================================
 
 def write_signal_dataset(
@@ -313,11 +312,10 @@ def write_signal_dataset(
     attrs_extra: dict[str, str] | None = None,
     compress_level: int = 4,
 ) -> None:
-    """Write extreme-weather signal masks to a NetCDF file.
+    """将极端天气信号掩膜写入 NetCDF 文件。
 
-    Signal variables are stored as ``int8`` with ``flag_values`` / ``flag_meanings``
-    attributes.  Spatial coordinates (including rotated pole) are preserved from
-    *bundle.dataset*.
+    信号变量以 ``int8`` 存储，并带有 ``flag_values`` / ``flag_meanings`` 属性。
+    空间坐标（包括旋转极点网格）从 *bundle.dataset* 保留。
     """
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -326,12 +324,12 @@ def write_signal_dataset(
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build coordinate variables
+    # 构建坐标变量
     coords: dict[str, xr.Variable] = {}
     for cname in bundle.dataset.coords:
         coords[cname] = bundle.dataset.coords[cname].variable
 
-    # Build data variables
+    # 构建数据变量
     data_vars: dict[str, xr.DataArray] = {}
     spatial_key = ",".join(bundle.spatial_dims)
 
@@ -349,7 +347,7 @@ def write_signal_dataset(
 
     ds = xr.Dataset(data_vars, coords=coords)
 
-    # Global attributes
+    # 全局属性
     ds.attrs["source"] = bundle.source
     ds.attrs["tech"] = bundle.tech
     ds.attrs["grid_mode"] = "all_grid"
@@ -361,18 +359,18 @@ def write_signal_dataset(
     ds.attrs["longitude_convention"] = "preserved_from_source"
     ds.attrs["interpolation_space"] = "none"
 
-    # Time alignment metadata
+    # 时间对齐元数据
     if "time_alignment" in bundle.attrs_extra:
         ds.attrs["time_alignment"] = bundle.attrs_extra["time_alignment"]
     else:
         ds.attrs["time_alignment"] = "source_native"
 
-    # Source identifiers
+    # 数据源标识
     for key in ("model", "region", "scenario", "year", "month"):
         if key in bundle.attrs_extra:
             ds.attrs[key] = bundle.attrs_extra[key]
 
-    # Event metadata
+    # 事件元数据
     if attrs_extra:
         for k, v in attrs_extra.items():
             ds.attrs[k] = v
@@ -383,7 +381,7 @@ def write_signal_dataset(
         "compare exposure rates across temporal resolutions with caution"
     )
 
-    # Encoding: int8 with zlib for signals, float32 for coordinates
+    # 编码：信号变量使用带 zlib 的 int8，坐标使用 float32
     encoding: dict[str, dict] = {}
     for vn in ds.data_vars:
         encoding[vn] = {
@@ -395,7 +393,7 @@ def write_signal_dataset(
         if ds.coords[cn].dtype.kind == "f":
             encoding[cn] = {"dtype": "float32", "zlib": True, "complevel": compress_level}
 
-    # Preserve crs variable if present (for CORDEX rotated pole)
+    # 若存在 crs 变量则保留（用于 CORDEX 旋转极点网格）
     if "crs" in bundle.dataset:
         ds["crs"] = bundle.dataset["crs"]
 
@@ -407,14 +405,14 @@ def write_weather_dataset(
     out_path: str | Path,
     compress_level: int = 4,
 ) -> None:
-    """Write standardised weather variables to a NetCDF file.
+    """将标准化气象变量写入 NetCDF 文件。
 
-    All data variables are stored as float32.
+    所有数据变量均以 float32 存储。
     """
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build dataset from bundle
+    # 从 bundle 构建数据集
     data_vars = {}
     for vn in bundle.dataset.data_vars:
         da = bundle.dataset[vn]
@@ -422,7 +420,7 @@ def write_weather_dataset(
 
     ds = xr.Dataset(data_vars, coords=bundle.dataset.coords)
 
-    # Global attributes
+    # 全局属性
     ds.attrs["source"] = bundle.source
     ds.attrs["grid_mode"] = "all_grid"
     ds.attrs["stations_dir"] = "None"
@@ -437,11 +435,11 @@ def write_weather_dataset(
         if key in bundle.attrs_extra:
             ds.attrs[key] = bundle.attrs_extra[key]
 
-    # Preserve crs if present
+    # 若存在 crs 则保留
     if "crs" in bundle.dataset:
         ds["crs"] = bundle.dataset["crs"]
 
-    # Encoding: float32 with zlib
+    # 编码：float32 + zlib
     encoding: dict[str, dict] = {}
     for vn in ds.data_vars:
         encoding[vn] = {

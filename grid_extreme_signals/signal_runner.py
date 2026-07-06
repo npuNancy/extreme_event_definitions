@@ -1,7 +1,6 @@
-"""Signal runner: orchestrates the load → standardise → detect → write pipeline.
+"""信号运行器：组织加载、标准化、识别、写出流程。
 
-This module is the shared core for all four data source adapters.  It is
-called from the CLI entry point and drives the per-task processing loop.
+该模块是四类数据源适配器共享的核心逻辑，由 CLI 入口调用，并驱动逐任务处理循环。
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Ensure project root is importable
+# 确保项目根目录可导入
 _project_root = str(Path(__file__).resolve().parents[2])
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -31,10 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
-# Event → required variable mapping
+# 事件 → 所需变量映射
 # =====================================================================
 
-# Minimal set of unified variables each event needs
+# 每个事件所需的最小统一变量集合
 _EVENT_REQUIRED_VARS: dict[str, list[str]] = {
     "high_temp": ["temp_C"],
     "high_wind": ["wind_ms"],
@@ -49,25 +48,25 @@ _EVENT_REQUIRED_VARS: dict[str, list[str]] = {
 
 
 def _event_required_var(tech: str, event_name: str) -> str:
-    """Return the first required variable name for an event (for logging)."""
+    """返回事件所需的第一个变量名（用于日志）。"""
     return _EVENT_REQUIRED_VARS.get(event_name, ["unknown"])[0]
 
 
 # =====================================================================
-# Main pipeline
+# 主流程
 # =====================================================================
 
 def run_signal_pipeline(adapter, args) -> None:
-    """Run the full signal generation pipeline.
+    """运行完整的信号生成流程。
 
-    Parameters
-    ----------
+    参数
+    ----
     adapter : WeatherAdapter
-        Instantiated adapter for the chosen data source.
+        已实例化的数据源适配器。
     args : argparse.Namespace
-        Parsed CLI arguments.
+        解析后的命令行参数。
     """
-    # --- Station filter guard (Phase 1) ---------------------------------
+    # --- 场站筛选保护（Phase 1）---------------------------------
     if getattr(args, "stations_dir", None) is not None:
         raise NotImplementedError(
             "Station-filter mode is reserved but not implemented yet. "
@@ -82,37 +81,37 @@ def run_signal_pipeline(adapter, args) -> None:
     require_events = getattr(args, "require_events", [])
 
     tasks = adapter.iter_tasks(args)
-    logger.info("Total tasks: %d", len(tasks))
+    logger.info("任务总数：%d", len(tasks))
 
     for task in tasks:
         _log_task(adapter, task)
         for tech in ("wind", "solar"):
             signal_path = adapter.signal_output_path(task, tech)
             if skip_existing(signal_path, overwrite):
-                logger.info("[skip] %s", signal_path)
+                logger.info("[跳过] %s", signal_path)
                 continue
 
             if dry_run:
-                logger.info("[dry_run] would write %s", signal_path)
+                logger.info("[试运行] 将写出 %s", signal_path)
                 continue
 
-            # --- Load weather ---
+            # --- 加载气象数据 ---
             try:
                 if tech == "wind":
                     bundle = adapter.load_wind_weather(task)
                 else:
                     bundle = adapter.load_solar_weather(task)
             except (FileNotFoundError, ValueError) as e:
-                logger.warning("Missing input for %s: %s — skipping task", tech, e)
+                logger.warning("%s 输入缺失：%s，跳过任务", tech, e)
                 continue
 
-            # --- Extract numpy arrays for registry ---
+            # --- 为注册表提取 numpy 数组 ---
             weather_dict = _bundle_to_weather_dict(bundle)
 
-            # --- Compute signals ---
+            # --- 计算信号 ---
             masks = registry.simple_signals(tech, weather_dict, skip_missing=True)
 
-            # --- Supported / skipped events ---
+            # --- 支持/跳过的事件 ---
             supported = sorted(masks.keys())
             all_simple = set(registry.SIMPLE[tech].keys())
             skipped = sorted(all_simple - set(supported))
@@ -122,7 +121,7 @@ def run_signal_pipeline(adapter, args) -> None:
                 reason = bundle.skipped_inputs.get(req_var, f"missing {req_var}")
                 skipped_reasons[ev] = reason
 
-            # --- Check --require_events ---
+            # --- 检查 --require_events ---
             for req in require_events:
                 if req not in masks:
                     raise RuntimeError(
@@ -130,7 +129,7 @@ def run_signal_pipeline(adapter, args) -> None:
                         f"Missing input: {bundle.skipped_inputs}"
                     )
 
-            # --- Build output attributes ---
+            # --- 构建输出属性 ---
             attrs_extra = dict(bundle.attrs_extra)
             attrs_extra["supported_events"] = ",".join(supported)
             attrs_extra["skipped_events"] = ",".join(skipped)
@@ -139,33 +138,33 @@ def run_signal_pipeline(adapter, args) -> None:
             )
             attrs_extra["weather_saved"] = str(save_weather).lower()
 
-            # --- Write signal file ---
+            # --- 写出信号文件 ---
             write_signal_dataset(
                 bundle, masks, signal_path,
                 attrs_extra=attrs_extra,
                 compress_level=compress_level,
             )
-            logger.info("[ok] %s  events=%s", signal_path, supported)
+            logger.info("[完成] %s  事件=%s", signal_path, supported)
 
-            # --- Optionally write weather file ---
+            # --- 按需写出气象文件 ---
             if save_weather:
                 weather_path = adapter.weather_output_path(task, tech)
                 write_weather_dataset(bundle, weather_path, compress_level)
-                logger.info("[weather] %s", weather_path)
+                logger.info("[气象] %s", weather_path)
 
-            # --- Free memory ---
+            # --- 释放内存 ---
             del bundle, weather_dict, masks
             gc.collect()
 
-    logger.info("Pipeline complete.")
+    logger.info("流程完成。")
 
 
 # =====================================================================
-# Helpers
+# 辅助函数
 # =====================================================================
 
 def _bundle_to_weather_dict(bundle: WeatherBundle) -> dict[str, np.ndarray]:
-    """Extract unified weather variables from *bundle* as float32 numpy arrays."""
+    """从 *bundle* 提取统一气象变量，并转换为 float32 numpy 数组。"""
     weather: dict[str, np.ndarray] = {}
     for var_name in ("temp_C", "wind_ms", "precip_mmh", "rsds", "rh_pct", "dust_aod"):
         if var_name in bundle.dataset.data_vars:
@@ -174,6 +173,6 @@ def _bundle_to_weather_dict(bundle: WeatherBundle) -> dict[str, np.ndarray]:
 
 
 def _log_task(adapter, task: dict) -> None:
-    """Log a human-readable description of the current task."""
+    """记录当前任务的可读描述。"""
     parts = [f"{k}={v}" for k, v in task.items() if v is not None]
-    logger.info("Processing: %s", " ".join(parts))
+    logger.info("正在处理：%s", " ".join(parts))

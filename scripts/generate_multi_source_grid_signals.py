@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Unified CLI entry point for multi-source grid extreme weather signal generation.
+"""多数据源网格极端天气信号生成的统一 CLI 入口。
 
-Supports four data sources:
-  - ``regional_bcsd``  — CMIP6–ERA5Land BCSD (regular lat/lon, 3-hourly)
-  - ``china_cmfd_bcsd`` — CMIP6–CMFD BCSD for China (sfcWind, 3-hourly)
-  - ``cordex_nam12``   — CMIP6–CORDEX NAM-12 (rotated pole, hourly)
-  - ``era5land_raw``   — Raw ERA5-Land global (hourly, requires deaccumulation)
+支持四类数据源：
+  - ``regional_bcsd``  — CMIP6–ERA5Land BCSD（规则经纬度，3 小时）
+  - ``china_cmfd_bcsd`` — 中国区域 CMIP6–CMFD BCSD（sfcWind，3 小时）
+  - ``cordex_nam12``   — CMIP6–CORDEX NAM-12（旋转极点网格，逐小时）
+  - ``era5land_raw``   — ERA5-Land 全球原始数据（逐小时，需要解累计）
 
-Examples::
+示例::
 
-    # Regional BCSD
+    # 区域 BCSD
     python scripts/generate_multi_source_grid_signals.py \\
         --source regional_bcsd \\
         --data_dir data/bcsd_outputs \\
@@ -18,7 +18,7 @@ Examples::
         --scenario ssp126 \\
         --years 2015-2060
 
-    # China CMFD BCSD
+    # 中国 CMFD BCSD
     python scripts/generate_multi_source_grid_signals.py \\
         --source china_cmfd_bcsd \\
         --data_dir data/cmip6_downscaling_3hr \\
@@ -50,7 +50,7 @@ import logging
 import os
 import sys
 
-# Ensure project root is importable
+# 确保项目根目录可导入
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -63,7 +63,7 @@ from grid_extreme_signals.signal_runner import run_signal_pipeline
 
 logger = logging.getLogger("grid_extreme_signals")
 
-# Default chunk sizes per source
+# 各数据源默认时间块大小
 _DEFAULT_CHUNK_TIME = {
     "regional_bcsd": 512,
     "china_cmfd_bcsd": 512,
@@ -74,93 +74,93 @@ _DEFAULT_CHUNK_TIME = {
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Generate extreme weather signals from multi-source grid climate data.",
+        description="从多数据源网格气候数据生成极端天气信号。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
 
-    # ---- Common arguments ----
+    # ---- 通用参数 ----
     p.add_argument(
         "--source", required=True,
         choices=["regional_bcsd", "china_cmfd_bcsd", "cordex_nam12", "era5land_raw"],
-        help="Data source type.",
+        help="数据源类型。",
     )
-    p.add_argument("--data_dir", required=True, help="Input data root directory.")
+    p.add_argument("--data_dir", required=True, help="输入数据根目录。")
     p.add_argument(
         "--output_root", default="outputs/grid_extreme_signals",
-        help="Output root directory (default: outputs/grid_extreme_signals).",
+        help="输出根目录（默认：outputs/grid_extreme_signals）。",
     )
     p.add_argument(
         "--years", required=True,
-        help="Year range: 'YYYY' or 'YYYY-YYYY'.",
+        help="年份范围：'YYYY' 或 'YYYY-YYYY'。",
     )
     p.add_argument(
         "--months", default="",
-        help="Month filter: '1,2,3' or empty for all months (default: all).",
+        help="月份筛选：'1,2,3'；留空表示所有月份（默认：全部）。",
     )
     p.add_argument(
         "--stations_dir", default=None,
-        help="Station selection directory (RESERVED — raises NotImplementedError in Phase 1).",
+        help="场站筛选目录（预留；第一阶段中会抛出 NotImplementedError）。",
     )
     p.add_argument(
         "--require_events", nargs="*", default=[],
-        help="Events that must be computed; error if input is missing.",
+        help="必须计算的事件；若缺少输入则报错。",
     )
     p.add_argument(
         "--allow_missing_optional", action="store_true",
-        help="Skip gracefully when optional inputs are missing.",
+        help="可选输入缺失时跳过而不中断。",
     )
     p.add_argument(
         "--allow_unit_inference", action="store_true",
-        help="Allow heuristic unit inference when units attribute is missing.",
+        help="缺少 units 属性时允许启发式单位推断。",
     )
     p.add_argument(
         "--chunk_time", type=int, default=None,
-        help="Time steps per processing chunk (default varies by source).",
+        help="每个处理块的时间步数（默认值随数据源变化）。",
     )
     p.add_argument(
         "--compress_level", type=int, default=4,
-        help="NetCDF zlib compression level (default: 4).",
+        help="NetCDF zlib 压缩级别（默认：4）。",
     )
     p.add_argument(
         "--overwrite", action="store_true",
-        help="Recompute and overwrite existing output files.",
+        help="重新计算并覆盖已有输出文件。",
     )
     p.add_argument(
         "--dry_run", action="store_true",
-        help="Print task plan without computing.",
+        help="只打印任务计划，不执行计算。",
     )
     p.add_argument(
         "--save_weather", action="store_true",
-        help="Save standardised weather NetCDF files in addition to signals.",
+        help="除信号文件外，同时保存标准化气象 NetCDF 文件。",
     )
 
-    # ---- Source-specific arguments ----
-    # regional_bcsd / china_cmfd_bcsd
-    p.add_argument("--model", default=None, help="Climate model name.")
-    p.add_argument("--region", default=None, help="Region name (regional_bcsd only). Use 'all' to process all regions.")
-    p.add_argument("--scenario", default=None, help="Scenario (e.g., ssp126, ssp245, ssp585).")
+    # ---- 数据源专用参数 ----
+    # regional_bcsd / china_cmfd_bcsd 参数
+    p.add_argument("--model", default=None, help="气候模式名称。")
+    p.add_argument("--region", default=None, help="区域名称（仅 regional_bcsd）；使用 'all' 处理全部区域。")
+    p.add_argument("--scenario", default=None, help="情景代码（如 ssp126、ssp245、ssp585）。")
 
-    # cordex_nam12
-    p.add_argument("--gcm_model", default=None, help="GCM model (CORDEX).")
-    p.add_argument("--realization", default=None, help="Realization ID, e.g. r1i1p1f1 (CORDEX).")
-    p.add_argument("--rcm_model", default=None, help="RCM model, e.g. CRCM5 (CORDEX).")
+    # cordex_nam12 参数
+    p.add_argument("--gcm_model", default=None, help="GCM 模式（CORDEX）。")
+    p.add_argument("--realization", default=None, help="成员编号，例如 r1i1p1f1（CORDEX）。")
+    p.add_argument("--rcm_model", default=None, help="RCM 模式，例如 CRCM5（CORDEX）。")
 
-    # era5land_raw
+    # era5land_raw 参数
     p.add_argument(
         "--era5land_d2m_root", default=None,
-        help="Alternative root directory for d2m variable (ERA5-Land).",
+        help="d2m 变量的备用根目录（ERA5-Land）。",
     )
     p.add_argument(
         "--dust_dir", default=None,
-        help="MERRA-2 dust data root directory (ERA5-Land, optional).",
+        help="MERRA-2 沙尘数据根目录（ERA5-Land，可选）。",
     )
 
     return p
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    """Check that required source-specific arguments are present."""
+    """检查数据源专用必填参数是否齐全。"""
     src = args.source
 
     if src == "regional_bcsd":
@@ -178,11 +178,11 @@ def validate_args(args: argparse.Namespace) -> None:
             if getattr(args, name) is None:
                 raise ValueError(f"--{name} is required for --source cordex_nam12")
 
-    # era5land_raw needs no extra args
+    # era5land_raw 不需要额外参数
 
 
 def create_adapter(args: argparse.Namespace):
-    """Instantiate the correct adapter for the chosen source."""
+    """按所选数据源创建对应适配器。"""
     if args.source == "regional_bcsd":
         return RegionalBcsdAdapter(args)
     elif args.source == "china_cmfd_bcsd":
@@ -192,7 +192,7 @@ def create_adapter(args: argparse.Namespace):
     elif args.source == "era5land_raw":
         return Era5LandRawAdapter(args)
     else:
-        raise ValueError(f"Unknown source: {args.source}")
+        raise ValueError(f"未知数据源：{args.source}")
 
 
 def main() -> None:
@@ -205,13 +205,13 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Set default chunk_time per source
+    # 按数据源设置默认 chunk_time
     if args.chunk_time is None:
         args.chunk_time = _DEFAULT_CHUNK_TIME[args.source]
 
     validate_args(args)
 
-    logger.info("Source: %s", args.source)
+    logger.info("数据源：%s", args.source)
     adapter = create_adapter(args)
     run_signal_pipeline(adapter, args)
 

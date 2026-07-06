@@ -1,11 +1,11 @@
-"""Adapter for China-region CMIP6–CMFD BCSD data.
+"""中国区域 CMIP6–CMFD BCSD 数据适配器。
 
-Key difference from ``regional_bcsd``:
-  - Uses **sfcWind** (scalar 10 m wind speed) instead of uas/vas components.
-  - No region subdirectory in the data layout.
-  - ``pr`` is optional — precipitation events are skipped when absent.
+与 ``regional_bcsd`` 的主要区别：
+  - 使用 **sfcWind**（10 m 标量风速），而不是 uas/vas 分量。
+  - 数据布局中没有区域子目录。
+  - ``pr`` 是可选变量；缺失时跳过降水事件。
 
-File layout::
+文件布局::
 
     {data_dir}/{model}/{var}_3h_bcsd_on_0.1deg_china_{scenario}_*.nc
 """
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChinaCmfdBcsdAdapter(WeatherAdapter):
-    """Adapter for China-region CMIP6–CMFD BCSD data."""
+    """中国区域 CMIP6–CMFD BCSD 数据适配器。"""
 
     def __init__(self, args) -> None:
         self.data_dir = args.data_dir
@@ -57,7 +57,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         self.allow_missing_optional = getattr(args, "allow_missing_optional", False)
 
     # ------------------------------------------------------------------
-    # Task iteration
+    # 任务迭代
     # ------------------------------------------------------------------
 
     def iter_tasks(self, args) -> list[dict]:
@@ -73,7 +73,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         return tasks
 
     # ------------------------------------------------------------------
-    # Output paths
+    # 输出路径
     # ------------------------------------------------------------------
 
     def _base_dir(self, task: dict, tech: str) -> Path:
@@ -97,7 +97,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Shared helpers
+    # 共享辅助函数
     # ------------------------------------------------------------------
 
     def _open_and_prepare(
@@ -134,7 +134,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         return da.isel({time_name: idx})
 
     # ------------------------------------------------------------------
-    # Wind weather
+    # 风电气象
     # ------------------------------------------------------------------
 
     def load_wind_weather(self, task: dict) -> WeatherBundle:
@@ -143,13 +143,13 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Required: sfcWind
+        # 必需：sfcWind
         sfcwind_da, f_sw, sw_units = self._open_and_prepare(
             task, "sfcWind", time_name, lat_name, lon_name,
         )
         source_files.append(f_sw)
 
-        # Optional: tas
+        # 可选：tas
         try:
             tas_da, f_tas, tas_units = self._open_and_prepare(
                 task, "tas", time_name, lat_name, lon_name,
@@ -158,19 +158,19 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         except FileNotFoundError:
             tas_da = None
             tas_units = None
-            skipped_inputs["temp_C"] = "tas file not found"
+            skipped_inputs["temp_C"] = "未找到 tas 文件"
 
-        # Filter to year
+        # 筛选年份
         sfcwind_da = self._filter_year(sfcwind_da, time_name, year)
         wind_time = sfcwind_da[time_name].values
 
-        # Interpolate tas if needed
+        # 必要时插值 tas
         time_alignment = "sfcWind instantaneous native"
         if tas_da is not None:
             tas_da = self._filter_year(tas_da, time_name, year)
             tas_time = tas_da[time_name].values
             if not np.array_equal(tas_time, wind_time):
-                logger.info("Interpolating tas to sfcWind time axis")
+                logger.info("将 tas 插值到 sfcWind 时间轴")
                 temp_C = tas_to_celsius(
                     interp_instantaneous_to_target(tas_da, time_name, wind_time),
                     tas_units,
@@ -185,13 +185,13 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         else:
             temp_C = None
 
-        # Wind speed = sfcWind directly
+        # 风速直接使用 sfcWind
         wind_ms = wind_to_ms(
             sfcwind_da.values, sw_units,
             allow_inference=self.allow_unit_inference,
         )
 
-        # Build dataset
+        # 构建数据集
         data_vars = {
             "wind_ms": xr.DataArray(wind_ms, dims=(time_name, lat_name, lon_name)),
         }
@@ -207,10 +207,10 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             },
         )
 
-        skipped_inputs.setdefault("rh_pct", "no humidity data in BCSD")
-        skipped_inputs.setdefault("dust_aod", "no dust data in BCSD")
-        skipped_inputs.setdefault("rsds", "not used for wind signals")
-        skipped_inputs.setdefault("precip_mmh", "not used for wind signals")
+        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
+        skipped_inputs.setdefault("rsds", "风电信号不使用该变量")
+        skipped_inputs.setdefault("precip_mmh", "风电信号不使用该变量")
 
         return WeatherBundle(
             source="china_cmfd_bcsd",
@@ -232,7 +232,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Solar weather
+    # 光伏气象
     # ------------------------------------------------------------------
 
     def load_solar_weather(self, task: dict) -> WeatherBundle:
@@ -241,7 +241,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         source_files = []
         skipped_inputs: dict[str, str] = {}
 
-        # Required: rsds (target time axis)
+        # 必需：rsds（目标时间轴）
         rsds_da, f_rsds, rsds_units = self._open_and_prepare(
             task, "rsds", time_name, lat_name, lon_name,
         )
@@ -249,21 +249,21 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         rsds_da = self._filter_year(rsds_da, time_name, year)
         target_times = rsds_da[time_name].values
 
-        # Required: tas
+        # 必需：tas
         tas_da, f_tas, tas_units = self._open_and_prepare(
             task, "tas", time_name, lat_name, lon_name,
         )
         source_files.append(f_tas)
         tas_da = self._filter_year(tas_da, time_name, year)
 
-        # Required: sfcWind
+        # 必需：sfcWind
         sfcwind_da, f_sw, sw_units = self._open_and_prepare(
             task, "sfcWind", time_name, lat_name, lon_name,
         )
         source_files.append(f_sw)
         sfcwind_da = self._filter_year(sfcwind_da, time_name, year)
 
-        # Optional: pr
+        # 可选：pr
         pr_da = None
         pr_units = None
         try:
@@ -273,10 +273,10 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             source_files.append(f_pr)
             pr_da = self._filter_year(pr_da, time_name, year)
         except FileNotFoundError:
-            skipped_inputs["precip_mmh"] = "pr file not found"
-            logger.warning("pr file not found — precipitation events will be skipped")
+            skipped_inputs["precip_mmh"] = "未找到 pr 文件"
+            logger.warning("未找到 pr 文件，将跳过降水事件")
 
-        # Validate spatial grids
+        # 校验空间网格
         validate_same_spatial_grid(
             rsds_da.to_dataset(name="rsds"),
             {"tas": tas_da.to_dataset(name="tas"),
@@ -284,14 +284,14 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             lat_name, lon_name,
         )
 
-        # Interpolate instantaneous to rsds time axis (Scheme 4)
+        # 将瞬时变量插值到 rsds 时间轴（方案 4）
         tas_time = tas_da[time_name].values
         sw_time = sfcwind_da[time_name].values
         need_interp_tas = not np.array_equal(tas_time, target_times)
         need_interp_sw = not np.array_equal(sw_time, target_times)
 
         if need_interp_tas:
-            logger.info("Interpolating tas to rsds time axis")
+            logger.info("将 tas 插值到 rsds 时间轴")
             temp_C = tas_to_celsius(
                 interp_instantaneous_to_target(tas_da, time_name, target_times),
                 tas_units,
@@ -301,7 +301,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             temp_C = tas_to_celsius(tas_da.values, tas_units, allow_inference=self.allow_unit_inference)
 
         if need_interp_sw:
-            logger.info("Interpolating sfcWind to rsds time axis")
+            logger.info("将 sfcWind 插值到 rsds 时间轴")
             wind_interp = interp_instantaneous_to_target(sfcwind_da, time_name, target_times)
             wind_ms = wind_to_ms(wind_interp, sw_units, allow_inference=self.allow_unit_inference)
         else:
@@ -329,7 +329,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
                 allow_inference=self.allow_unit_inference,
             )
 
-        # Build dataset
+        # 构建数据集
         data_vars = {
             "temp_C": xr.DataArray(temp_C, dims=(time_name, lat_name, lon_name)),
             "wind_ms": xr.DataArray(wind_ms, dims=(time_name, lat_name, lon_name)),
@@ -347,8 +347,8 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             },
         )
 
-        skipped_inputs.setdefault("rh_pct", "no humidity data in BCSD")
-        skipped_inputs.setdefault("dust_aod", "no dust data in BCSD")
+        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
+        skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
 
         interp_desc = []
         if need_interp_tas:

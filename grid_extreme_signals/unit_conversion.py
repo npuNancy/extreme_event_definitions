@@ -1,10 +1,10 @@
-"""Unit conversion utilities for standardised weather variables.
+"""标准化气象变量的单位转换工具。
 
-All functions are pure (no I/O, no logging).  They take numpy arrays and
-optional unit strings, returning float32 arrays in the target unit.
+所有函数都是纯函数（无 I/O、无日志）。输入 numpy 数组和可选单位字符串，
+返回目标单位下的 float32 数组。
 
-When ``allow_inference`` is *False* (the default), a missing or unrecognised
-unit string raises :class:`ValueError`.
+当 ``allow_inference`` 为 *False*（默认）时，缺失或无法识别的单位字符串会抛出
+:class:`ValueError`。
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Temperature
+# 温度
 # ---------------------------------------------------------------------------
 
 def tas_to_celsius(
@@ -21,9 +21,9 @@ def tas_to_celsius(
     *,
     allow_inference: bool = False,
 ) -> np.ndarray:
-    """Convert temperature to °C.
+    """将温度转换为 °C。
 
-    Supported source units: ``K`` / ``kelvin``, ``degC`` / ``°C`` / ``C`` / ``celsius``.
+    支持的源单位：``K`` / ``kelvin``、``degC`` / ``°C`` / ``C`` / ``celsius``。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "").replace("²", "2")
@@ -33,7 +33,7 @@ def tas_to_celsius(
     if units_l in ("degc", "°c", "c", "celsius"):
         return x.astype(np.float32)
 
-    # No recognised unit
+    # 单位无法识别
     if not allow_inference:
         raise ValueError(
             f"Temperature unit not recognised: {units!r}.  "
@@ -46,7 +46,7 @@ def tas_to_celsius(
 
 
 # ---------------------------------------------------------------------------
-# Wind speed
+# 风速
 # ---------------------------------------------------------------------------
 
 def wind_to_ms(
@@ -55,9 +55,9 @@ def wind_to_ms(
     *,
     allow_inference: bool = False,
 ) -> np.ndarray:
-    """Convert wind speed to m s⁻¹.
+    """将风速转换为 m s⁻¹。
 
-    Supported: ``m s-1`` / ``m/s``, ``km h-1`` / ``km/h``.
+    支持：``m s-1`` / ``m/s``、``km h-1`` / ``km/h``。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "")
@@ -76,7 +76,7 @@ def wind_to_ms(
 
 
 # ---------------------------------------------------------------------------
-# Precipitation rate
+# 降水率
 # ---------------------------------------------------------------------------
 
 def pr_to_mmh(
@@ -86,17 +86,17 @@ def pr_to_mmh(
     timestep_hours: float | None = None,
     allow_inference: bool = False,
 ) -> np.ndarray:
-    """Convert precipitation rate to mm h⁻¹.
+    """将降水率转换为 mm h⁻¹。
 
-    Supported:
+    支持：
       - ``kg m-2 s-1`` / ``mm s-1``  → ×3600
       - ``mm day-1``                  → ÷24
-      - ``mm h-1``                    → identity
-      - ``mm`` (per time step)        → ÷timestep_hours  (requires *timestep_hours*)
+      - ``mm h-1``                    → 不变
+      - ``mm``（每个时间步累计量）      → ÷timestep_hours（需要 *timestep_hours*）
 
     .. warning::
-       Do **not** call this for ERA5-Land ``tp`` — that variable needs
-       deaccumulation first (handled by the era5land_raw adapter).
+       不要对 ERA5-Land ``tp`` 直接调用本函数；该变量需要先解累计
+       （由 era5land_raw 适配器处理）。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "").replace("²", "2")
@@ -124,7 +124,7 @@ def pr_to_mmh(
 
 
 # ---------------------------------------------------------------------------
-# Surface solar radiation (rsds)
+# 地表短波辐射（rsds）
 # ---------------------------------------------------------------------------
 
 def rsds_to_wm2(
@@ -134,16 +134,16 @@ def rsds_to_wm2(
     timestep_seconds: float | None = None,
     allow_inference: bool = False,
 ) -> np.ndarray:
-    """Convert surface shortwave radiation to W m⁻².
+    """将地表短波辐射转换为 W m⁻²。
 
-    Supported:
-      - ``W m-2``   → identity
+    支持：
+      - ``W m-2``   → 不变
       - ``kW m-2``  → ×1000
-      - ``J m-2``   → ÷timestep_seconds  (requires *timestep_seconds*)
+      - ``J m-2``   → ÷timestep_seconds（需要 *timestep_seconds*）
 
     .. warning::
-       Do **not** call this for ERA5-Land ``ssrd`` — that variable needs
-       deaccumulation first (handled by the era5land_raw adapter).
+       不要对 ERA5-Land ``ssrd`` 直接调用本函数；该变量需要先解累计
+       （由 era5land_raw 适配器处理）。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "").replace("²", "2")
@@ -168,14 +168,14 @@ def rsds_to_wm2(
 
 
 # ---------------------------------------------------------------------------
-# Relative humidity (Magnus formula)
+# 相对湿度（Magnus 公式）
 # ---------------------------------------------------------------------------
 
 def magnus_rh(t2m_k: np.ndarray, d2m_k: np.ndarray) -> np.ndarray:
-    """Relative humidity (%) from 2 m temperature and dew-point (both Kelvin).
+    """由 2 m 气温和露点温度计算相对湿度（%，二者均为 Kelvin）。
 
-    Uses the Magnus formula:  RH = 100 × e(Td) / es(T)
-    where e(T) = 6.112 × exp(17.67 × T / (T + 243.5))  [T in °C].
+    使用 Magnus 公式：RH = 100 × e(Td) / es(T)，其中
+    e(T) = 6.112 × exp(17.67 × T / (T + 243.5))，[T 单位为 °C]。
     """
     t = np.asarray(t2m_k, dtype=np.float32) - 273.15
     td = np.asarray(d2m_k, dtype=np.float32) - 273.15

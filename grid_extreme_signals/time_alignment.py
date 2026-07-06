@@ -1,6 +1,6 @@
-"""Time-axis utilities: coordinate discovery, interpolation, year/month parsing.
+"""时间轴工具：坐标发现、插值、年份/月分解析。
 
-Supports both ``datetime64`` and ``cftime`` calendars used by CMIP6 data.
+支持 CMIP6 数据常用的 ``datetime64`` 和 ``cftime`` 日历。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import xarray as xr
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# Coordinate name discovery
+# 坐标名发现
 # =====================================================================
 
 TIME_CANDIDATES = ("time", "valid_time")
@@ -24,9 +24,9 @@ RLON_CANDIDATES = ("rlon",)
 
 
 def find_coord_name(ds: xr.Dataset, candidates: Iterable[str]) -> str:
-    """Return the first candidate name found in *ds* coords or dims.
+    """返回 *ds* 的坐标或维度中第一个匹配的候选名称。
 
-    Raises ``KeyError`` if none match.
+    若没有匹配项则抛出 ``KeyError``。
     """
     for c in candidates:
         if c in ds.coords or c in ds.dims:
@@ -38,19 +38,18 @@ def find_coord_name(ds: xr.Dataset, candidates: Iterable[str]) -> str:
 
 
 # =====================================================================
-# Numeric time representation (handles datetime64 *and* cftime)
+# 数值化时间表示（同时处理 datetime64 和 cftime）
 # =====================================================================
 
 def datetime64_to_ns(values: np.ndarray) -> np.ndarray:
-    """Convert time coordinate values to a strictly-monotonic numeric array.
+    """将时间坐标值转换为严格单调的数值数组。
 
-    For ``datetime64`` arrays the result is ``int64`` nanoseconds.
-    For ``cftime`` arrays the result is ``float64`` seconds from the first
-    element (sufficient for ``np.searchsorted``).
+    ``datetime64`` 数组会转换为 ``int64`` 纳秒；``cftime`` 数组会转换为相对首个
+    元素的 ``float64`` 秒数（足够用于 ``np.searchsorted``）。
     """
     arr = np.asarray(values)
     if arr.dtype.kind == "O":
-        # cftime objects
+        # cftime 对象
         import cftime
         if isinstance(arr.flat[0], cftime.datetime):
             base = arr[0]
@@ -60,7 +59,7 @@ def datetime64_to_ns(values: np.ndarray) -> np.ndarray:
                 dtype=np.float64,
             )
             return offsets
-        # fallback
+        # 兜底路径
         return arr.astype(np.float64)
     if np.issubdtype(arr.dtype, np.datetime64):
         return arr.astype("datetime64[ns]").astype(np.int64)
@@ -68,7 +67,7 @@ def datetime64_to_ns(values: np.ndarray) -> np.ndarray:
 
 
 # =====================================================================
-# Linear interpolation of instantaneous variables to target time axis
+# 将瞬时变量线性插值到目标时间轴
 # =====================================================================
 
 def interp_instantaneous_to_target(
@@ -78,24 +77,23 @@ def interp_instantaneous_to_target(
     *,
     fill_boundary: str = "nearest",
 ) -> np.ndarray:
-    """Linearly interpolate an instantaneous variable to *target_times*.
+    """将瞬时变量线性插值到 *target_times*。
 
-    Parameters
-    ----------
+    参数
+    ----
     da : xr.DataArray
-        Source variable.  Must have a time dimension named *time_name*.
+        源变量，必须有名为 *time_name* 的时间维度。
     time_name : str
-        Name of the time dimension in *da*.
+        *da* 中的时间维度名。
     target_times : np.ndarray
-        Target time coordinate values (datetime64 or cftime).
+        目标时间坐标值（datetime64 或 cftime）。
     fill_boundary : str
-        ``"nearest"`` — clamp out-of-range targets to the nearest source value.
-        ``"nan"`` — set out-of-range targets to NaN.
+        ``"nearest"`` 表示越界目标取最近源值；``"nan"`` 表示越界目标置为 NaN。
 
-    Returns
-    -------
+    返回
+    ----
     np.ndarray
-        Interpolated values, dtype float32, shape ``(len(target_times), ...)``.
+        插值结果，dtype 为 float32，形状为 ``(len(target_times), ...)``。
     """
     src_times = da[time_name].values
     src_num = datetime64_to_ns(src_times)
@@ -126,7 +124,7 @@ def interp_instantaneous_to_target(
     elif fill_boundary != "nan":
         raise ValueError(f"Unsupported fill_boundary={fill_boundary!r}")
 
-    # Read only the needed slice to save memory
+    # 只读取所需切片以节省内存
     i0 = int(min(left.min(), right.min()))
     i1 = int(max(left.max(), right.max())) + 1
     src_block = da.isel({time_name: slice(i0, i1)}).values.astype(np.float32)
@@ -140,7 +138,7 @@ def interp_instantaneous_to_target(
     denom = right_t - left_t
     with np.errstate(invalid="ignore", divide="ignore"):
         w = np.where(denom != 0, (tgt_t - left_t) / denom, 0.0).astype(np.float32)
-    # Broadcast w over spatial dims
+    # 将 w 广播到空间维度
     for _ in range(src_block.ndim - 1):
         w = w[:, None]
     w = np.broadcast_to(w, src_block[left_rel].shape)
@@ -152,11 +150,11 @@ def interp_instantaneous_to_target(
 
 
 # =====================================================================
-# Year / month parsing helpers
+# 年份/月分解析辅助函数
 # =====================================================================
 
 def parse_years(years_str: str) -> tuple[int, int]:
-    """Parse ``"YYYY"`` or ``"YYYY-YYYY"`` into ``(y0, y1)`` inclusive."""
+    """将 ``"YYYY"`` 或 ``"YYYY-YYYY"`` 解析为闭区间 ``(y0, y1)``。"""
     if "-" in years_str:
         parts = years_str.split("-", 1)
         return int(parts[0]), int(parts[1])
@@ -165,7 +163,7 @@ def parse_years(years_str: str) -> tuple[int, int]:
 
 
 def parse_months(months_str: str | None) -> list[int]:
-    """Parse ``""`` / ``None`` → all 12 months, or ``"1,2,3"`` → list."""
+    """解析月份：``""`` / ``None`` 表示全部 12 个月，``"1,2,3"`` 表示列表。"""
     if not months_str:
         return list(range(1, 13))
     return [int(m.strip()) for m in months_str.split(",") if m.strip()]
@@ -176,16 +174,16 @@ def build_time_index(
     years_str: str,
     months_str: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Select time steps matching *years* and *months*, return index arrays.
+    """选择匹配 *years* 和 *months* 的时间步，并返回索引数组。
 
-    Returns
-    -------
+    返回
+    ----
     idx : np.ndarray (int)
-        Integer indices into *time_da*.
+        指向 *time_da* 的整数索引。
     doy : np.ndarray (float32)
-        Day-of-year for each selected step.
+        每个选中时间步对应的年内日序。
     hour_decimal : np.ndarray (float32)
-        Decimal hour (e.g. 1.5 = 01:30) for each selected step.
+        每个选中时间步对应的十进制小时（例如 1.5 = 01:30）。
     """
     y0, y1 = parse_years(years_str)
     month_list = parse_months(months_str)
@@ -215,7 +213,7 @@ def filter_year(
     time_da: xr.DataArray,
     year: int,
 ) -> np.ndarray:
-    """Return integer indices where ``time_da.dt.year == year``."""
+    """返回满足 ``time_da.dt.year == year`` 的整数索引。"""
     mask = time_da.dt.year == year
     idx = np.where(mask.values)[0]
     if idx.size == 0:

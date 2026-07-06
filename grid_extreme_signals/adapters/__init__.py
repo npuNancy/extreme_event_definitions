@@ -1,1 +1,1 @@
-"""Data source adapters for grid extreme weather signals."""
+"""网格极端天气信号的数据源适配器。"""
