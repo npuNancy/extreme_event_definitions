@@ -16,7 +16,10 @@ PCT = 5.0   # 改这里
 EXPR = f"24h资源距平 <= 每站 P{PCT}"
 
 
-def signal(resource, time, base_mask=None, clim_tbl=None, thr=None):
+def signal(resource, time, base_mask=None, clim_tbl=None, thr=None,
+           window_steps=None, mark_next_step=True):
     """resource = 10m 风速 wind_ms (T,K); 返回 (T,K) bool。"""
     return common.low_resource(resource, time, pct=PCT, base_mask=base_mask,
-                               night=None, clim_tbl=clim_tbl, thr=thr)
+                               night=None, clim_tbl=clim_tbl, thr=thr,
+                               window_steps=window_steps,
+                               mark_next_step=mark_next_step)

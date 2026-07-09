@@ -76,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="第一阶段网格信号根目录（从这里读取）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
+    p.add_argument("--cf_root", default="../data/cfs",
+                   help="容量因子数据根目录，用于默认启用的低资源事件。")
+    p.add_argument("--lowres_baseline_years", default="2015-2029",
+                   help="低资源事件基线期，默认 2015-2029。")
+    p.add_argument("--lowres_cf_years", default="2015-2060",
+                   help="CF 文件覆盖年份，用于查找 allmonths 文件。")
+    p.add_argument("--lowres_grid_lat_chunk", type=int, default=1,
+                   help="第一阶段网格低资源计算的纬向块大小。")
+    p.add_argument("--no_low_resource", action="store_true",
+                   help="跳过默认启用的风电/光伏低资源事件。")
     p.add_argument("--no_activation_mask", action="store_true")
     p.add_argument("--allow_unit_inference", action="store_true")
     p.add_argument("--allow_missing_optional", action="store_true")
@@ -166,6 +176,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
         masks_acc: dict[str, list[np.ndarray]] = {}
         times_acc: list[np.ndarray] = []
         skipped_reasons: dict[str, str] = {}
+        lowres_attrs: dict[str, str] = {}
 
         for year in range(y0, y1 + 1):
             gp = _grid_signal_path(args.grid_signals_dir, args.source, args.model,
@@ -181,6 +192,12 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
                 ds.close()
                 logger.warning("[%s/%s/%d] 网格文件中无信号变量，跳过", region, tech, year)
                 continue
+            if not args.no_low_resource and "signal_low_resource" not in sig_vars:
+                ds.close()
+                raise RuntimeError(
+                    f"{gp} 缺少 signal_low_resource；请重新运行第一阶段并保持默认低资源启用，"
+                    "或显式传入 --no_low_resource 跳过低资源。"
+                )
 
             times = ds[time_name].values
             if times.size == 0:
@@ -200,6 +217,17 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
                     ev = ev.strip()
                     if ev:
                         skipped_reasons[ev] = ds.attrs.get("skipped_event_reasons", f"{ev} 缺少输入")
+                for key in (
+                    "low_resource_source",
+                    "low_resource_cf_file",
+                    "low_resource_baseline_years",
+                    "low_resource_window_hours",
+                    "low_resource_window_steps",
+                    "low_resource_timestep_hours",
+                    "low_resource_mark_next_step",
+                ):
+                    if key in ds.attrs:
+                        lowres_attrs[key] = ds.attrs[key]
                 logger.info("[%s/%s] 已匹配 %d 个场站（网格 %dx%d，经度为360制=%s）",
                             region, tech, len(match), grid_lat.size, grid_lon.size,
                             sm.is_lon_360(grid_lon))
@@ -223,8 +251,11 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
         valid = match.valid[None, :]
 
         supported = sorted(v[len("signal_"):] for v in masks_all)
-        all_simple = set(registry.SIMPLE[tech].keys())
-        skipped = sorted(all_simple - set(supported))
+        all_events = set(registry.SIMPLE[tech].keys())
+        all_events.add("low_resource")
+        skipped = sorted(all_events - set(supported))
+        if args.no_low_resource and "low_resource" in skipped:
+            skipped_reasons["low_resource"] = "用户通过 --no_low_resource 关闭"
 
         out_masks = {v: (arr & act & valid).astype(np.int8) for v, arr in masks_all.items()}
         sm.write_station_signals(
@@ -234,6 +265,7 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
             supported=supported, skipped=skipped, skipped_reasons=skipped_reasons,
             max_dist=args.max_dist, activation_mask_on=not args.no_activation_mask,
             compress_level=args.compress_level,
+            attrs_extra=lowres_attrs,
         )
         logger.info("[%s/%s] 已写出 %s  事件=%s  场站=%d",
                     region, tech, out_path, supported, len(match))

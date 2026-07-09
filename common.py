@@ -13,14 +13,21 @@ import pandas as pd
 
 # ====== 参数(改这里) ======
 PCT = 5.0                       # 距平百分位 (P5)
-HALF_BACK, HALF_FWD = 12, 12    # 居中 24h 窗口
+HALF_BACK, HALF_FWD = 12, 12    # 小时级数据的居中 24h 窗口
+
+
+def roll_centered(a, window_steps=24):
+    """居中滚动均值 (T,K); 窗口不完整 -> NaN。"""
+    win = int(window_steps)
+    if win < 1:
+        raise ValueError(f"window_steps must be positive, got {window_steps!r}")
+    return (pd.DataFrame(a).rolling(win, center=True, min_periods=win)
+            .mean().to_numpy().astype(np.float32))
 
 
 def roll24c(a):
-    """24h 居中滚动均值 (T,K); 窗口不完整(min_periods=24)->NaN。复刻参考 roll24c。"""
-    win = HALF_BACK + HALF_FWD
-    return (pd.DataFrame(a).rolling(win, center=True, min_periods=win)
-            .mean().to_numpy().astype(np.float32))
+    """24h 居中滚动均值 (T,K); 小时级数据使用 24 个时间步。"""
+    return roll_centered(a, HALF_BACK + HALF_FWD)
 
 
 def clim288(roll, time, base_mask=None):
@@ -60,7 +67,8 @@ def solar_elevation(lats, lons, times):
 
 
 def low_resource(resource, time, pct=PCT, base_mask=None, night=None,
-                 clim_tbl=None, thr=None):
+                 clim_tbl=None, thr=None, window_steps=None,
+                 mark_next_step=True):
     """低资源信号 (T,K) bool。严格复刻参考(含 mark t&t+1)。
     resource : 资源时序 (风=10m风速 wind_ms; 光=辐照 rsds) (T,K)
     time     : DatetimeIndex (T,)
@@ -70,7 +78,7 @@ def low_resource(resource, time, pct=PCT, base_mask=None, night=None,
     注意: 严格对齐参考需"基线期算clim/thr, 目标年单独算roll"——此时分两次调用并传入
           clim_tbl/thr; 单次调用(base_mask)是便捷近似。"""
     t = pd.DatetimeIndex(time)
-    roll = roll24c(resource)
+    roll = roll24c(resource) if window_steps is None else roll_centered(resource, window_steps)
     if clim_tbl is None:
         clim_tbl = clim288(roll, t, base_mask)
     anom = roll - clim_tbl[t.month.to_numpy() - 1, t.hour.to_numpy()]
@@ -80,7 +88,8 @@ def low_resource(resource, time, pct=PCT, base_mask=None, night=None,
             thr = np.nanpercentile(np.where(np.isfinite(ab), ab, np.nan), pct, axis=0)
     ev = anom <= thr[None, :]
     ev2 = ev.copy()
-    ev2[1:] |= ev[:-1]                 # mark t AND t+1 (复刻参考)
+    if mark_next_step:
+        ev2[1:] |= ev[:-1]             # mark t AND t+1 (复刻参考)
     sig = ev2.copy()
     sig[~np.isfinite(anom)] = False    # 不完整窗口/NaN -> 无事件
     if night is not None:

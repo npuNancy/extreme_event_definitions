@@ -16,8 +16,11 @@ PCT = 5.0   # 改这里
 EXPR = f"24h辐照距平 <= 每站 P{PCT} (夜间置0)"
 
 
-def signal(resource, time, lat, lon, base_mask=None, clim_tbl=None, thr=None):
+def signal(resource, time, lat, lon, base_mask=None, clim_tbl=None, thr=None,
+           window_steps=None, mark_next_step=True):
     """resource = 辐照 rsds (T,K); lat/lon=(K,); 返回 (T,K) bool。"""
     night = (common.solar_elevation(lat, lon, time) <= 0).T   # (K,T)->(T,K)
     return common.low_resource(resource, time, pct=PCT, base_mask=base_mask,
-                               night=night, clim_tbl=clim_tbl, thr=thr)
+                               night=night, clim_tbl=clim_tbl, thr=thr,
+                               window_steps=window_steps,
+                               mark_next_step=mark_next_step)

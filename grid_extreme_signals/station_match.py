@@ -33,9 +33,13 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_SCIPY = False
 
-import shapefile  # pyshp
 from shapely.geometry import Point, shape
 from shapely.prepared import prep
+
+try:
+    import shapefile  # pyshp
+except ImportError:  # pragma: no cover
+    shapefile = None
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +193,26 @@ def nearest_index_2d(lat2d, lon2d_180, sta_lat, sta_lon_180):
 def load_country_shapes(shp_path):
     """读取 Natural Earth admin-0 国家边界 shapefile → ``{NAME: geometry}``。
 
-    使用 pyshp（``shapefile``）+ shapely，与已验证的参考实现一致。
+    优先使用 pyshp（``shapefile``）+ shapely，与已验证的参考实现一致；
+    当前环境缺少 pyshp 时，回退到 Fiona。
     """
-    sf = shapefile.Reader(shp_path)
-    fields = [f[0] for f in sf.fields[1:]]
-    name_idx = fields.index("NAME")
+    if shapefile is not None:
+        sf = shapefile.Reader(shp_path)
+        fields = [f[0] for f in sf.fields[1:]]
+        name_idx = fields.index("NAME")
+        countries = {}
+        for i, rec in enumerate(sf.records()):
+            name = rec[name_idx]
+            countries[name] = shape(sf.shape(i).__geo_interface__)
+        return countries
+
+    import fiona
+
     countries = {}
-    for i, rec in enumerate(sf.records()):
-        name = rec[name_idx]
-        countries[name] = shape(sf.shape(i).__geo_interface__)
+    with fiona.open(shp_path) as src:
+        for feat in src:
+            name = feat["properties"]["NAME"]
+            countries[name] = shape(feat["geometry"])
     return countries
 
 
@@ -363,6 +378,7 @@ def write_station_signals(
     max_dist: float,
     activation_mask_on: bool,
     compress_level: int = 4,
+    attrs_extra: dict | None = None,
 ) -> None:
     """写出场站级极端天气信号 NetCDF。
 
@@ -408,6 +424,9 @@ def write_station_signals(
         "n_stations": str(n_sta),
         "threshold_source": "extreme_event_definitions/events",
     })
+    if attrs_extra:
+        for k, v in attrs_extra.items():
+            ds.attrs[k] = v
     encoding = {name: {"zlib": True, "complevel": compress_level, "dtype": "int8"}
                 for name in masks}
     ds.to_netcdf(str(p), encoding=encoding)

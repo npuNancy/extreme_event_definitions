@@ -47,6 +47,7 @@ if _PROJECT_ROOT not in sys.path:
 import registry  # noqa: E402
 from grid_extreme_signals.adapters.regional_bcsd import RegionalBcsdAdapter  # noqa: E402
 from grid_extreme_signals import station_match as sm  # noqa: E402
+from grid_extreme_signals import cf_low_resource  # noqa: E402
 
 logger = logging.getLogger("station_signals_direct")
 
@@ -81,6 +82,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="最近邻网格距离容差（单位：度，默认 %(default)s）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
+    p.add_argument("--cf_root", default="../data/cfs",
+                   help="容量因子数据根目录，用于默认启用的低资源事件。")
+    p.add_argument("--lowres_baseline_years", default="2015-2029",
+                   help="低资源事件基线期，默认 2015-2029。")
+    p.add_argument("--lowres_cf_years", default="2015-2060",
+                   help="CF 文件覆盖年份，用于查找 allmonths 文件。")
+    p.add_argument("--lowres_station_chunk", type=int, default=128,
+                   help="低资源事件计算的场站块大小。")
+    p.add_argument("--lowres_time_chunk", type=int, default=512,
+                   help="从 CF 文件读取的时间块大小。")
+    p.add_argument("--no_low_resource", action="store_true",
+                   help="跳过默认启用的风电/光伏低资源事件。")
     p.add_argument("--no_activation_mask", action="store_true",
                    help="保留所有年份信号（不把投产前年份置零）。")
     p.add_argument("--allow_unit_inference", action="store_true")
@@ -217,15 +230,53 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
     )
     valid = match.valid[None, :]  # (1, n_sta)
 
+    lowres_attrs = {}
+    lowres_valid = None
+    lowres_skip_reason = None
+    if not args.no_low_resource:
+        cf_file = cf_low_resource.find_cf_file(
+            args.cf_root, args.source, args.model, scenario, tech,
+            region=region, years=args.lowres_cf_years,
+        )
+        if cf_file is None:
+            lowres_skip_reason = f"未找到 CF 文件：cf_root={args.cf_root}"
+        else:
+            try:
+                result = cf_low_resource.compute_station_low_resource(
+                    cf_file,
+                    tech,
+                    times_all,
+                    match.stations["lat"].to_numpy(np.float64),
+                    match.stations["lon"].to_numpy(np.float64),
+                    baseline_years=args.lowres_baseline_years,
+                    max_dist=args.max_dist,
+                    station_chunk=args.lowres_station_chunk,
+                    time_chunk=args.lowres_time_chunk,
+                )
+                masks_all["low_resource"] = result.mask.astype(bool)
+                lowres_valid = result.valid
+                lowres_attrs = cf_low_resource.attrs(result)
+            except Exception as e:
+                logger.warning("[%s/%s] 低资源计算失败：%s", region, tech, e)
+                lowres_skip_reason = f"低资源计算失败：{e}"
+    else:
+        lowres_skip_reason = "用户通过 --no_low_resource 关闭"
+
     supported = sorted(masks_all.keys())
-    all_simple = set(registry.SIMPLE[tech].keys())
-    skipped = sorted(all_simple - set(supported))
+    all_events = set(registry.SIMPLE[tech].keys())
+    all_events.add("low_resource")
+    skipped = sorted(all_events - set(supported))
     skipped_reasons = {ev: skipped_inputs.get(_first_req_var(tech, ev), f"{ev} 缺少输入")
                        for ev in skipped}
+    if "low_resource" in skipped and lowres_skip_reason:
+        skipped_reasons["low_resource"] = lowres_skip_reason
 
     out_masks: dict[str, np.ndarray] = {}
     for name, arr in masks_all.items():
-        arr = arr & act & valid  # 投产前年份和超距离容差场站置零
+        event_valid = valid
+        if name == "low_resource" and lowres_valid is not None:
+            event_valid = valid & lowres_valid[None, :]
+        arr = arr & act & event_valid  # 投产前年份和超距离容差场站置零
         out_masks[f"signal_{name}"] = arr.astype(np.int8)
 
     sm.write_station_signals(
@@ -235,6 +286,7 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         supported=supported, skipped=skipped, skipped_reasons=skipped_reasons,
         max_dist=args.max_dist, activation_mask_on=not args.no_activation_mask,
         compress_level=args.compress_level,
+        attrs_extra=lowres_attrs,
     )
     logger.info("[%s/%s] 已写出 %s  事件=%s  场站=%d  时间步=%d",
                 region, tech, out_path, supported, len(match), times_all.size)
