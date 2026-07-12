@@ -85,8 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cf_root", default="data/cfs",
                    help="容量因子数据根目录，用于默认启用的低资源事件。")
     p.add_argument("--lowres_threshold_dir",
-                   default="outputs/low_resource_thresholds/ERA5Land_2015-2025",
-                   help="ERA5Land 低资源阈值目录。")
+                   default=str(cf_low_resource.default_threshold_dir()),
+                   help="ERA5Land SSP 场站稀疏低资源阈值目录。")
     p.add_argument("--lowres_baseline_years", default=None,
                    help=argparse.SUPPRESS)
     p.add_argument("--lowres_cf_years", default="2015-2060",
@@ -244,9 +244,19 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         if cf_file is None:
             lowres_skip_reason = f"未找到 CF 文件：cf_root={args.cf_root}"
         else:
-            threshold_file = cf_low_resource.threshold_file_for_tech(
-                args.lowres_threshold_dir, tech
+            threshold_file = cf_low_resource.sparse_threshold_file_for_scenario_tech(
+                args.lowres_threshold_dir,
+                scenario,
+                tech,
+                args.lowres_baseline_years or "2015-2025",
             )
+            if not threshold_file.exists():
+                # 新流程默认使用稀疏阈值；保留旧完整阈值文件名兼容手工测试。
+                threshold_file = cf_low_resource.threshold_file_for_tech(
+                    args.lowres_threshold_dir,
+                    tech,
+                    args.lowres_baseline_years or "2015-2025",
+                )
             if not threshold_file.exists():
                 lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"
             else:

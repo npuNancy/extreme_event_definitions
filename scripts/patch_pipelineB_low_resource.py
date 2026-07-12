@@ -34,7 +34,7 @@ DEFAULT_OUTPUT_ROOT = (
     "../outputs/station_signals_pipelineB/regional_bcsd/NESM3"
 )
 DEFAULT_CF_ROOT = "data/cfs"
-DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/ERA5Land_2015-2025"
+DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025"
 
 
 def lon_to_180(lon):
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cf_root", default=DEFAULT_CF_ROOT,
                    help="CF 数据根目录，默认 data/cfs。")
     p.add_argument("--threshold_dir", default=DEFAULT_THRESHOLD_DIR,
-                   help="ERA5Land 低资源阈值目录。")
+                   help="ERA5Land SSP 场站稀疏低资源阈值目录。")
     p.add_argument("--model", default="NESM3")
     p.add_argument("--region", default="all",
                    help="区域名或 all。")
@@ -390,7 +390,18 @@ def _process_file(path: Path, args) -> bool:
     if cf_file is None:
         logger.warning("[%s/%s/%s] 未找到 CF 文件，跳过", region, scenario, tech)
         return False
-    threshold_file = cf_low_resource.threshold_file_for_tech(args.threshold_dir, tech)
+    threshold_file = cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        args.threshold_dir,
+        scenario,
+        tech,
+        args.baseline_years or "2015-2025",
+    )
+    if not threshold_file.exists():
+        threshold_file = cf_low_resource.threshold_file_for_tech(
+            args.threshold_dir,
+            tech,
+            args.baseline_years or "2015-2025",
+        )
     if not threshold_file.exists():
         logger.warning("[%s/%s/%s] 未找到 ERA5Land 阈值文件 %s，跳过",
                        region, scenario, tech, threshold_file)

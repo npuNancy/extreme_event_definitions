@@ -50,6 +50,28 @@ class ThresholdGrid:
     threshold: np.ndarray | None = None
 
 
+@dataclass
+class SparseThreshold:
+    """ERA5Land 场站稀疏低资源阈值元数据。"""
+
+    path: Path
+    station_lat: np.ndarray
+    station_lon: np.ndarray
+    station_type: np.ndarray
+    attrs: dict[str, str]
+
+
+@dataclass
+class FourPointMatch:
+    """规则网格四点双线性匹配结果。"""
+
+    lat_idx: np.ndarray
+    lon_idx: np.ndarray
+    weights: np.ndarray
+    corner_lat: np.ndarray
+    corner_lon: np.ndarray
+
+
 def parse_years(years: str) -> tuple[int, int]:
     """解析 ``YYYY`` 或 ``YYYY-YYYY``。"""
     if "-" in years:
@@ -133,7 +155,7 @@ def cf_var(tech: str) -> str:
 
 def default_threshold_dir() -> Path:
     """返回默认 ERA5Land 低资源阈值目录。"""
-    return Path("outputs/low_resource_thresholds/ERA5Land_2015-2025")
+    return Path("outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025")
 
 
 def threshold_file_for_tech(
@@ -145,6 +167,19 @@ def threshold_file_for_tech(
     return (
         Path(threshold_dir) /
         f"low_resource_threshold_{tech}_ERA5Land_{baseline_years}.nc"
+    )
+
+
+def sparse_threshold_file_for_scenario_tech(
+    threshold_dir: str | Path,
+    scenario: str,
+    tech: str,
+    baseline_years: str = "2015-2025",
+) -> Path:
+    """返回 SSP 场站稀疏 ERA5Land 阈值文件路径。"""
+    return (
+        Path(threshold_dir) /
+        f"low_resource_threshold_sparse_{scenario}_{tech}_ERA5Land_{baseline_years}.nc"
     )
 
 
@@ -218,6 +253,32 @@ def load_low_resource_threshold(
                          clim=clim, threshold=threshold)
 
 
+def load_sparse_low_resource_threshold(threshold_file: str | Path) -> SparseThreshold:
+    """读取 SSP 场站稀疏 ERA5Land 阈值文件元数据。"""
+    path = Path(threshold_file)
+    with open_h5(path, "r") as f:
+        attrs = {k: decode_attr(v) for k, v in f.attrs.items()}
+        station_lat = f["station_lat"][:].astype(np.float64)
+        station_lon = f["station_lon"][:].astype(np.float64)
+        station_type = f["station_type"][:].astype(np.int8)
+    return SparseThreshold(
+        path=path,
+        station_lat=station_lat,
+        station_lon=station_lon,
+        station_type=station_type,
+        attrs=attrs,
+    )
+
+
+def is_sparse_threshold_file(threshold_file: str | Path) -> bool:
+    """判断阈值文件是否为场站稀疏阈值。"""
+    with open_h5(threshold_file, "r") as f:
+        kind = decode_attr(f.attrs.get("threshold_kind", ""))
+        return kind == "sparse_station" or (
+            "station" in f and "station_lat" in f and "threshold" in f
+        )
+
+
 def match_threshold_grid(
     threshold_lat: np.ndarray,
     threshold_lon: np.ndarray,
@@ -233,6 +294,127 @@ def match_threshold_grid(
         np.asarray(target_lat, dtype=np.float64),
         target_lon_180,
     )
+
+
+def _nearest_value_idx(values: np.ndarray, target: float) -> int:
+    return int(np.argmin(np.abs(np.asarray(values, dtype=np.float64) - target)))
+
+
+def bilinear_four_point_regular(
+    grid_lat: np.ndarray,
+    grid_lon: np.ndarray,
+    station_lats: np.ndarray,
+    station_lons: np.ndarray,
+) -> FourPointMatch:
+    """在规则经纬度网格上为场站选择四周点并计算双线性权重。
+
+    corner 顺序固定为 southwest, southeast, northwest, northeast。
+    经度按 360 度环形处理；返回的索引用于原始 ``grid_lat/grid_lon`` 读取。
+    """
+    lat = np.asarray(grid_lat, dtype=np.float64)
+    lon_raw = np.asarray(grid_lon, dtype=np.float64)
+    lon360 = sm.lon_to_360(lon_raw)
+    sta_lat = np.asarray(station_lats, dtype=np.float64)
+    sta_lon360 = sm.lon_to_360(station_lons)
+
+    lat_order = np.argsort(lat)
+    lat_sorted = lat[lat_order]
+    lon_order = np.argsort(lon360)
+    lon_sorted = lon360[lon_order]
+
+    n_sta = sta_lat.shape[0]
+    lat_idx = np.empty((n_sta, 4), dtype=np.int64)
+    lon_idx = np.empty((n_sta, 4), dtype=np.int64)
+    weights = np.empty((n_sta, 4), dtype=np.float32)
+    corner_lat = np.empty((n_sta, 4), dtype=np.float32)
+    corner_lon = np.empty((n_sta, 4), dtype=np.float32)
+
+    for i in range(n_sta):
+        y = float(sta_lat[i])
+        pos_y = int(np.searchsorted(lat_sorted, y, side="right"))
+        if pos_y <= 0:
+            south_pos = north_pos = 0
+        elif pos_y >= lat_sorted.size:
+            south_pos = north_pos = lat_sorted.size - 1
+        else:
+            south_pos = pos_y - 1
+            north_pos = pos_y
+        south_idx = int(lat_order[south_pos])
+        north_idx = int(lat_order[north_pos])
+        south_lat = float(lat[south_idx])
+        north_lat = float(lat[north_idx])
+        if np.isclose(north_lat, south_lat):
+            wy_north = 0.0
+        else:
+            wy_north = (y - south_lat) / (north_lat - south_lat)
+            wy_north = float(np.clip(wy_north, 0.0, 1.0))
+        wy_south = 1.0 - wy_north
+
+        x = float(sta_lon360[i])
+        pos_x = int(np.searchsorted(lon_sorted, x, side="right"))
+        west_pos = (pos_x - 1) % lon_sorted.size
+        east_pos = pos_x % lon_sorted.size
+        west_idx = int(lon_order[west_pos])
+        east_idx = int(lon_order[east_pos])
+        west_lon = float(lon360[west_idx])
+        east_lon = float(lon360[east_idx])
+        dx = (east_lon - west_lon) % 360.0
+        if np.isclose(dx, 0.0):
+            wx_east = 0.0
+        else:
+            wx_east = ((x - west_lon) % 360.0) / dx
+            wx_east = float(np.clip(wx_east, 0.0, 1.0))
+        wx_west = 1.0 - wx_east
+
+        lat_idx[i] = [south_idx, south_idx, north_idx, north_idx]
+        lon_idx[i] = [west_idx, east_idx, west_idx, east_idx]
+        weights[i] = [
+            wy_south * wx_west,
+            wy_south * wx_east,
+            wy_north * wx_west,
+            wy_north * wx_east,
+        ]
+        corner_lat[i] = lat[lat_idx[i]].astype(np.float32)
+        corner_lon[i] = lon_raw[lon_idx[i]].astype(np.float32)
+
+    return FourPointMatch(
+        lat_idx=lat_idx,
+        lon_idx=lon_idx,
+        weights=weights,
+        corner_lat=corner_lat,
+        corner_lon=corner_lon,
+    )
+
+
+def match_sparse_threshold_stations(
+    threshold: SparseThreshold,
+    station_lats: np.ndarray,
+    station_lons: np.ndarray,
+    tech: str,
+    *,
+    tol: float = 1e-5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """把输出场站匹配到稀疏阈值文件中的 station 维度。"""
+    target_lat = np.asarray(station_lats, dtype=np.float64)
+    target_lon = sm.lon_to_180(station_lons)
+    th_lat = np.asarray(threshold.station_lat, dtype=np.float64)
+    th_lon = sm.lon_to_180(threshold.station_lon)
+    type_code = 1 if tech == "wind" else 0
+    candidates = np.where(threshold.station_type == type_code)[0]
+
+    out_idx = np.full(target_lat.shape[0], -1, dtype=np.int64)
+    valid = np.zeros(target_lat.shape[0], dtype=bool)
+    for i, (lat_i, lon_i) in enumerate(zip(target_lat, target_lon)):
+        if candidates.size == 0:
+            break
+        dlat = np.abs(th_lat[candidates] - lat_i)
+        dlon = np.abs(((th_lon[candidates] - lon_i + 180.0) % 360.0) - 180.0)
+        dist = np.maximum(dlat, dlon)
+        j = _nearest_value_idx(dist, 0.0)
+        if dist[j] <= tol:
+            out_idx[i] = int(candidates[j])
+            valid[i] = True
+    return out_idx, valid
 
 
 def _read_threshold_points(
@@ -258,6 +440,20 @@ def _read_threshold_points(
             clim[:, :, pos] = clim_slice[:, :, inv]
             threshold[pos] = threshold_slice[inv]
     return clim, threshold
+
+
+def _read_sparse_threshold_points(
+    threshold_file: str | Path,
+    station_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按稀疏 station 索引读取 ``clim`` 和 ``threshold``。"""
+    station_idx = np.asarray(station_idx, dtype=np.int64)
+    read_idx = np.where(station_idx >= 0, station_idx, 0)
+    unique_idx, inv = np.unique(read_idx, return_inverse=True)
+    with open_h5(threshold_file, "r") as f:
+        clim_unique = f["clim"][:, :, unique_idx].astype(np.float32)
+        threshold_unique = f["threshold"][unique_idx].astype(np.float32)
+    return clim_unique[:, :, inv], threshold_unique[inv]
 
 
 def _time_indices(source_times: pd.DatetimeIndex, target_times) -> np.ndarray:
@@ -386,16 +582,29 @@ def compute_station_low_resource(
     valid = dist <= max_dist
     threshold = None
     threshold_lat_idx = threshold_lon_idx = None
+    sparse_station_idx = None
+    threshold_is_sparse = False
     if threshold_file is not None:
-        threshold = load_low_resource_threshold(threshold_file)
-        threshold_lat_idx, threshold_lon_idx, threshold_dist = match_threshold_grid(
-            threshold.lat,
-            threshold.lon,
-            station_lats.astype(np.float64),
-            station_lons.astype(np.float64),
-        )
-        th_max = max_dist if threshold_match_max_dist is None else threshold_match_max_dist
-        valid = valid & (threshold_dist <= th_max)
+        threshold_is_sparse = is_sparse_threshold_file(threshold_file)
+        if threshold_is_sparse:
+            threshold = load_sparse_low_resource_threshold(threshold_file)
+            sparse_station_idx, sparse_valid = match_sparse_threshold_stations(
+                threshold,
+                station_lats.astype(np.float64),
+                station_lons.astype(np.float64),
+                tech,
+            )
+            valid = valid & sparse_valid
+        else:
+            threshold = load_low_resource_threshold(threshold_file)
+            threshold_lat_idx, threshold_lon_idx, threshold_dist = match_threshold_grid(
+                threshold.lat,
+                threshold.lon,
+                station_lats.astype(np.float64),
+                station_lons.astype(np.float64),
+            )
+            th_max = max_dist if threshold_match_max_dist is None else threshold_match_max_dist
+            valid = valid & (threshold_dist <= th_max)
 
     tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
     cf_mm = _materialize_station_cf(cf_path, tech, lat_idx, lon_idx, time_chunk, tmp_dir)
@@ -409,11 +618,17 @@ def compute_station_low_resource(
             block = np.asarray(cf_mm[:, c0:c1], dtype=np.float32)
             clim_tbl = thr = None
             if threshold_file is not None:
-                clim_tbl, thr = _read_threshold_points(
-                    threshold_file,
-                    threshold_lat_idx[c0:c1],
-                    threshold_lon_idx[c0:c1],
-                )
+                if threshold_is_sparse:
+                    clim_tbl, thr = _read_sparse_threshold_points(
+                        threshold_file,
+                        sparse_station_idx[c0:c1],
+                    )
+                else:
+                    clim_tbl, thr = _read_threshold_points(
+                        threshold_file,
+                        threshold_lat_idx[c0:c1],
+                        threshold_lon_idx[c0:c1],
+                    )
             sig_full = _low_resource_block(
                 block, cf_times, baseline, tech,
                 station_lats[c0:c1], station_lons[c0:c1], window_steps,

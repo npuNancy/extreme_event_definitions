@@ -145,7 +145,18 @@ python scripts/station_signals_direct.py \
 | `--require_events` | 空 | 显式要求必须生成的事件；缺失输入时报错 |
 | `--overwrite` | `False` | 覆盖已有输出 |
 | `--dry_run` | `False` | 仅打印任务计划 |
-| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/ERA5Land_2015-2025` | ERA5Land 2015-2025 低资源阈值目录 |
+| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025` | ERA5Land 2015-2025 SSP 场站稀疏低资源阈值目录 |
+
+场站级低资源阈值需先按 SSP + 技术类型预计算，例如：
+
+```bash
+python scripts/precompute_station_low_resource_thresholds.py \
+  --cf_root data/cfs \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --scenario ssp126 \
+  --tech both \
+  --baseline_years 2015-2025
+```
 
 ### 天气中间文件
 
