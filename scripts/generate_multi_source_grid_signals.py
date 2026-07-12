@@ -134,32 +134,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--save_weather", action="store_true",
         help="除信号文件外，同时保存标准化气象 NetCDF 文件。",
     )
-    p.add_argument(
-        "--cf_root", default="data/cfs",
-        help="容量因子数据根目录，用于默认启用的低资源事件（默认：data/cfs）。",
-    )
-    p.add_argument(
-        "--lowres_threshold_dir",
-        default="outputs/low_resource_thresholds/ERA5Land_2015-2025",
-        help="ERA5Land 低资源阈值目录（默认：outputs/low_resource_thresholds/ERA5Land_2015-2025）。",
-    )
-    p.add_argument(
-        "--lowres_baseline_years", default=None,
-        help=argparse.SUPPRESS,
-    )
-    p.add_argument(
-        "--lowres_cf_years", default="2015-2060",
-        help="CF 文件覆盖年份，用于查找 allmonths 文件（默认：2015-2060）。",
-    )
-    p.add_argument(
-        "--lowres_grid_lat_chunk", type=int, default=1,
-        help="网格低资源计算的纬向块大小（默认：1，降低内存占用）。",
-    )
-    p.add_argument(
-        "--no_low_resource", action="store_true",
-        help="跳过默认启用的风电/光伏低资源事件。",
-    )
-
     # ---- 数据源专用参数 ----
     # regional_bcsd / china_cmfd_bcsd 参数
     p.add_argument("--model", default=None, help="气候模式名称。")

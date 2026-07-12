@@ -1,4 +1,4 @@
-"""场站到网格的匹配工具（Pipeline A 与 Pipeline B 共用）。
+"""场站到网格的匹配工具（Pipeline B 使用）。
 
 本模块移植了
 ``ref_code/calculate_wind_solar_out/station_output_calculator_0p1deg.py`` 中
@@ -16,7 +16,7 @@
   ``activation_year = min(year)`` 去重场站。
 - 将 ``(time, *spatial)`` 数组向量化抽取为 ``(time, n_stations)``。
 
-两个 pipeline 都只导入这些基础函数；pipeline 之间不互相调用，以保持解耦。
+场站级流程只导入这些基础函数，避免和网格信号生成流程耦合。
 """
 from __future__ import annotations
 
@@ -356,7 +356,7 @@ def gather_to_stations(arr3d, match: StationMatch) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# 场站级信号写出（Pipeline A 与 Pipeline B 共用）
+# 场站级信号写出（Pipeline B）
 # ---------------------------------------------------------------------------
 
 def write_station_signals(

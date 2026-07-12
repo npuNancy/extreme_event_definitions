@@ -58,9 +58,9 @@ extreme_event_definitions/
 | signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_high_humidity | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_dust | ❌ | ❌ | ❌ | ✅* 需 --dust_dir |
-| signal_low_resource | ✅* | ✅* | ✅* | 需 CF 文件 |
+| signal_low_resource | 场站级 Pipeline B | 场站级 Pipeline B | 场站级 Pipeline B | 需 CF 文件 |
 
-✅* = 需要 pr 文件、额外参数，或预先生成 ERA5Land 低资源阈值文件；❌ = 因缺少输入变量被跳过
+✅* = 需要 pr 文件或额外参数；❌ = 因缺少输入变量被跳过
 
 ### 跳过事件的原因
 
@@ -112,14 +112,13 @@ python scripts/generate_multi_source_grid_signals.py \
   --months 1,2
 ```
 
-## 场站级信号（Pipeline A / Pipeline B）
+## 场站级信号（Pipeline B）
 
-场站选址结果已是 **0.1°（≈10km）级别**（`data/stations/stations_SSP*.csv`，全球范围）。我们只对**有气象数据的国家**（BCSD 26 国 + China + NAM-12）范围内的场站计算极端天气信号。两条独立 pipeline（各自一个脚本）：
+场站选址结果已是 **0.1°（≈10km）级别**（`data/stations/stations_SSP*.csv`，全球范围）。我们只对**有气象数据的国家**（BCSD 26 国 + China + NAM-12）范围内的场站计算极端天气信号。
 
-- **Pipeline B（直接场站，推荐）** `scripts/station_signals_direct.py`：跳过网格，复用适配器标准化气象 → 最近邻 gather 到场站 → `registry.simple_signals` 检测 → 写场站级信号。效率最高。
-- **Pipeline A（网格→场站）** `scripts/station_signals_from_grid.py`：先跑/复用第一阶段网格信号（`--run_phase1` 或 `--grid_signals_dir`）→ 把布尔掩码 gather 到场站。会计算所有格点，但同时留有网格结果。
+- **Pipeline B（直接场站）** `scripts/station_signals_direct.py`：跳过网格，复用适配器标准化气象 → 最近邻 gather 到场站 → `registry.simple_signals` 检测 → 写场站级信号。
 
-两者产出**相同 schema 的场站级 NetCDF**（`dims: time, station`；`signal_<event>(time,station)` + 场站元数据），且对同一输入**逐位一致**（已校验）。
+产出**场站级 NetCDF**（`dims: time, station`；`signal_<event>(time,station)` + 场站元数据）。
 
 ### 匹配与经度（关键）
 - 场站经度统一 `[-180,180)`；**BCSD 网格经度约定逐区域不同**（Germany 5–15 像 `[-180,180]`，Portugal 存为 `328.7–353.7` 即 `[0,360)`）——脚本**逐文件检测并归一**后再做最近邻。
@@ -129,17 +128,10 @@ python scripts/generate_multi_source_grid_signals.py \
 
 ### 运行示例（regional_bcsd）
 ```bash
-# Pipeline B：直接场站信号
 python scripts/station_signals_direct.py \
   --source regional_bcsd --data_dir data/bcsd_outputs \
   --model MIROC-ES2H --stations_csv data/stations/stations_SSP1-2.6.csv \
   --region all --years 2015-2050 --allow_unit_inference
-
-# Pipeline A：先生成网格信号再抽取到场站
-python scripts/station_signals_from_grid.py \
-  --source regional_bcsd --data_dir data/bcsd_outputs \
-  --model MIROC-ES2H --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --region Germany --years 2030 --run_phase1 --allow_unit_inference
 ```
 
 > China(CMFD) / NAM-12(CORDEX) 的匹配逻辑已在共享模块就绪（规则网 / 2D 旋转极），待数据落盘后启用。详见 `document/场站级信号_实施计划.md`。
@@ -165,15 +157,15 @@ python scripts/station_signals_from_grid.py \
 
 ## 开发阶段（第一阶段 / 第二阶段）
 
-本项目分两个阶段推进。第一阶段负责全格点信号和多源适配；场站抽取由 Pipeline A/B 处理。
+本项目分两个阶段推进。第一阶段负责全格点信号和多源适配；场站信号由 Pipeline B 处理。
 
 ### 第一阶段（当前已实现）
 
 - **统一入口** `scripts/generate_multi_source_grid_signals.py`，按 `--source` 选适配器 → 标准化气象 → 生成信号。
 - **四类数据源适配器**：`regional_bcsd`、`china_cmfd_bcsd`、`cordex_nam12`、`era5land_raw`，保留各自原生网格（CORDEX 旋转极 `(rlat, rlon)` 不强行改造）。
 - **全格点模式**：`--stations_dir` 默认 `None`，对数据源中的全部网格点计算信号；传非空值则显式抛 `NotImplementedError`。**第一阶段不做场站筛选、不做 1° 级聚合。**
-- **事件生成**：各源可用信号见上方「各数据源可用信号」矩阵；缺输入变量或缺 ERA5Land 低资源阈值文件的事件记入输出属性 `skipped_events`，不伪造全零数组。
-- **`low_resource` 默认启用**：先用 `scripts/precompute_low_resource_thresholds.py` 生成 ERA5Land 2015-2025 阈值文件，后续模式/SSP 只读取该阈值。
+- **事件生成**：各源可用信号见上方「各数据源可用信号」矩阵；缺输入变量的事件记入输出属性 `skipped_events`，不伪造全零数组。
+- **全网格不生成 `low_resource`**：低资源事件只在场站级 Pipeline B 中计算。
 - **默认不保存 `weather_*.nc`**：只产出 `extreme_signals_*.nc`；传入 `--save_weather` 才额外写天气中间文件。
 - **基础设施**：`WeatherBundle` / `WeatherAdapter` 接口、单位转换、原子写出、断点续跑、事件跳过记录；旧真实场站脚本迁入 `legacy_station_pipeline/`。
 
@@ -181,8 +173,8 @@ python scripts/station_signals_from_grid.py \
 
 | 待办 | 卡点 |
 |---|---|
-| **场站级信号**（`station_signals_*.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
-| **低资源事件**（`signal_low_resource`） | ✅ 默认启用；依赖目标 CF 文件和 ERA5Land 2015-2025 阈值文件 |
+| **场站级信号**（`station_signals_direct.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
+| **低资源事件**（`signal_low_resource`） | ✅ 场站级默认启用；依赖目标 CF 文件和 ERA5Land 2015-2025 阈值文件 |
 | **MERRA-2 沙尘全网格重采样** | 第一阶段只做简单最近邻 |
 | **跨区域拼接** | — |
 | **不同来源结果的统一评估** | — |

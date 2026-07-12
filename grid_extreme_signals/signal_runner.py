@@ -25,7 +25,6 @@ from grid_extreme_signals.io_utils import (
     write_signal_dataset,
     write_weather_dataset,
 )
-from grid_extreme_signals import cf_low_resource
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +79,6 @@ def run_signal_pipeline(adapter, args) -> None:
     save_weather = getattr(args, "save_weather", False)
     dry_run = getattr(args, "dry_run", False)
     require_events = getattr(args, "require_events", [])
-    low_resource_enabled = not getattr(args, "no_low_resource", False)
-    cf_root = getattr(args, "cf_root", "data/cfs")
-    lowres_threshold_dir = getattr(
-        args, "lowres_threshold_dir", str(cf_low_resource.default_threshold_dir())
-    )
-    lowres_cf_years = getattr(args, "lowres_cf_years", "2015-2060")
-    lowres_grid_lat_chunk = getattr(args, "lowres_grid_lat_chunk", 1)
 
     tasks = adapter.iter_tasks(args)
     logger.info("任务总数：%d", len(tasks))
@@ -118,56 +110,15 @@ def run_signal_pipeline(adapter, args) -> None:
 
             # --- 计算信号 ---
             masks = registry.simple_signals(tech, weather_dict, skip_missing=True)
-            lowres_attrs = {}
-            lowres_skip_reason = None
-            if low_resource_enabled:
-                try:
-                    time_name = _bundle_time_name(bundle)
-                    cf_file = cf_low_resource.find_cf_file(
-                        cf_root,
-                        bundle.source,
-                        task.get("model", getattr(args, "model", "")),
-                        task.get("scenario", getattr(args, "scenario", "")),
-                        tech,
-                        region=task.get("region", getattr(args, "region", None)),
-                        years=lowres_cf_years,
-                    )
-                    if cf_file is None:
-                        lowres_skip_reason = f"未找到 CF 文件：cf_root={cf_root}"
-                    else:
-                        threshold_file = cf_low_resource.threshold_file_for_tech(
-                            lowres_threshold_dir, tech
-                        )
-                        if not threshold_file.exists():
-                            lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"
-                        else:
-                            result = cf_low_resource.compute_grid_low_resource(
-                                cf_file,
-                                tech,
-                                bundle.dataset[time_name].values,
-                                threshold_file=threshold_file,
-                                lat_chunk=lowres_grid_lat_chunk,
-                            )
-                            masks["low_resource"] = result.mask.astype(bool)
-                            lowres_attrs = cf_low_resource.attrs(result)
-                except Exception as e:
-                    logger.warning("%s 低资源计算失败：%s", tech, e)
-                    lowres_skip_reason = f"低资源计算失败：{e}"
-            else:
-                lowres_skip_reason = "用户通过 --no_low_resource 关闭"
 
             # --- 支持/跳过的事件 ---
             supported = sorted(masks.keys())
             all_events = set(registry.SIMPLE[tech].keys())
-            all_events.add("low_resource")
             skipped = sorted(all_events - set(supported))
             skipped_reasons = {}
             for ev in skipped:
-                if ev == "low_resource" and lowres_skip_reason:
-                    reason = lowres_skip_reason
-                else:
-                    req_var = _event_required_var(tech, ev)
-                    reason = bundle.skipped_inputs.get(req_var, f"missing {req_var}")
+                req_var = _event_required_var(tech, ev)
+                reason = bundle.skipped_inputs.get(req_var, f"missing {req_var}")
                 skipped_reasons[ev] = reason
 
             # --- 检查 --require_events ---
@@ -186,7 +137,6 @@ def run_signal_pipeline(adapter, args) -> None:
                 f"{k}: {v}" for k, v in skipped_reasons.items()
             )
             attrs_extra["weather_saved"] = str(save_weather).lower()
-            attrs_extra.update(lowres_attrs)
 
             # --- 写出信号文件 ---
             write_signal_dataset(
