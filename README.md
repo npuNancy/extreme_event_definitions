@@ -58,9 +58,9 @@ extreme_event_definitions/
 | signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_high_humidity | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_dust | ❌ | ❌ | ❌ | ✅* 需 --dust_dir |
-| signal_low_resource | 第一阶段暂缓 | 第一阶段暂缓 | 第一阶段暂缓 | 第一阶段暂缓 |
+| signal_low_resource | ✅* | ✅* | ✅* | 需 CF 文件 |
 
-✅* = 需要 pr 文件或额外参数；❌ = 因缺少输入变量被跳过
+✅* = 需要 pr 文件、额外参数，或预先生成 ERA5Land 低资源阈值文件；❌ = 因缺少输入变量被跳过
 
 ### 跳过事件的原因
 
@@ -153,6 +153,7 @@ python scripts/station_signals_from_grid.py \
 | `--require_events` | 空 | 显式要求必须生成的事件；缺失输入时报错 |
 | `--overwrite` | `False` | 覆盖已有输出 |
 | `--dry_run` | `False` | 仅打印任务计划 |
+| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/ERA5Land_2015-2025` | ERA5Land 2015-2025 低资源阈值目录 |
 
 ### 天气中间文件
 
@@ -164,15 +165,15 @@ python scripts/station_signals_from_grid.py \
 
 ## 开发阶段（第一阶段 / 第二阶段）
 
-本项目分两个阶段推进。**第一阶段只做"全格点 + 简单阈值事件 + 四源适配"**；凡是要依赖场站空间映射、跨时间分辨率可比性、跨来源统一评估的能力，都放到第二阶段。
+本项目分两个阶段推进。第一阶段负责全格点信号和多源适配；场站抽取由 Pipeline A/B 处理。
 
 ### 第一阶段（当前已实现）
 
 - **统一入口** `scripts/generate_multi_source_grid_signals.py`，按 `--source` 选适配器 → 标准化气象 → 生成信号。
 - **四类数据源适配器**：`regional_bcsd`、`china_cmfd_bcsd`、`cordex_nam12`、`era5land_raw`，保留各自原生网格（CORDEX 旋转极 `(rlat, rlon)` 不强行改造）。
 - **全格点模式**：`--stations_dir` 默认 `None`，对数据源中的全部网格点计算信号；传非空值则显式抛 `NotImplementedError`。**第一阶段不做场站筛选、不做 1° 级聚合。**
-- **只算简单阈值事件**：各源可用信号见上方「各数据源可用信号」矩阵；缺输入变量的事件记入输出属性 `skipped_events`，不伪造全零数组。
-- **`low_resource` 全部暂缓**。
+- **事件生成**：各源可用信号见上方「各数据源可用信号」矩阵；缺输入变量或缺 ERA5Land 低资源阈值文件的事件记入输出属性 `skipped_events`，不伪造全零数组。
+- **`low_resource` 默认启用**：先用 `scripts/precompute_low_resource_thresholds.py` 生成 ERA5Land 2015-2025 阈值文件，后续模式/SSP 只读取该阈值。
 - **默认不保存 `weather_*.nc`**：只产出 `extreme_signals_*.nc`；传入 `--save_weather` 才额外写天气中间文件。
 - **基础设施**：`WeatherBundle` / `WeatherAdapter` 接口、单位转换、原子写出、断点续跑、事件跳过记录；旧真实场站脚本迁入 `legacy_station_pipeline/`。
 
@@ -181,7 +182,7 @@ python scripts/station_signals_from_grid.py \
 | 待办 | 卡点 |
 |---|---|
 | **场站级信号**（`station_signals_*.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
-| **低资源事件**（`signal_low_resource`） | 3h 与 1h 时间分辨率不可比；需先明确 24h 滚动如何近似、"向后扩 1h"在 3h 数据中如何定义、基线期来源、跨源可比性 |
+| **低资源事件**（`signal_low_resource`） | ✅ 默认启用；依赖目标 CF 文件和 ERA5Land 2015-2025 阈值文件 |
 | **MERRA-2 沙尘全网格重采样** | 第一阶段只做简单最近邻 |
 | **跨区域拼接** | — |
 | **不同来源结果的统一评估** | — |
@@ -191,7 +192,7 @@ python scripts/station_signals_from_grid.py \
 1. **3 小时数据与逐小时数据的暴露率不能直接比较**：BCSD/CMFD/CORDEX 数据的时间分辨率不同，极端事件的暴露小时数不能跨分辨率直接比较。
 2. **NAM-12 使用旋转极网格**：输出维度为 `(time, rlat, rlon)`，保留二维 `lat(rlat, rlon)` 和 `lon(rlat, rlon)` 辅助坐标。
 3. **ERA5-Land 累积量需要跨月边界反累积**：`tp` 和 `ssrd` 是日内累积量，在月初 00:00 需要读取前月最后一小时作为差分起点。
-4. **低资源事件暂缓**：不同来源时间分辨率不同（3h vs 1h），低资源事件的基线和阈值需要进一步明确。
+4. **低资源事件阈值固定**：阈值来自 ERA5Land 2015-2025 CF 预计算结果；不同模式/SSP 不再用自身 CF 重新估计阈值。
 5. **旧真实场站脚本已迁移到 `legacy_station_pipeline/`**：推荐使用 `python -m legacy_station_pipeline.xxx` 运行。
 6. **默认仅写出 `extreme_signals_*.nc`**：只有显式传入 `--save_weather` 才保存 `weather_*.nc`。
 
