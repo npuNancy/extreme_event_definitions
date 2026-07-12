@@ -81,8 +81,10 @@ def run_signal_pipeline(adapter, args) -> None:
     dry_run = getattr(args, "dry_run", False)
     require_events = getattr(args, "require_events", [])
     low_resource_enabled = not getattr(args, "no_low_resource", False)
-    cf_root = getattr(args, "cf_root", "../data/cfs")
-    lowres_baseline_years = getattr(args, "lowres_baseline_years", "2015-2029")
+    cf_root = getattr(args, "cf_root", "data/cfs")
+    lowres_threshold_dir = getattr(
+        args, "lowres_threshold_dir", str(cf_low_resource.default_threshold_dir())
+    )
     lowres_cf_years = getattr(args, "lowres_cf_years", "2015-2060")
     lowres_grid_lat_chunk = getattr(args, "lowres_grid_lat_chunk", 1)
 
@@ -133,15 +135,21 @@ def run_signal_pipeline(adapter, args) -> None:
                     if cf_file is None:
                         lowres_skip_reason = f"未找到 CF 文件：cf_root={cf_root}"
                     else:
-                        result = cf_low_resource.compute_grid_low_resource(
-                            cf_file,
-                            tech,
-                            bundle.dataset[time_name].values,
-                            baseline_years=lowres_baseline_years,
-                            lat_chunk=lowres_grid_lat_chunk,
+                        threshold_file = cf_low_resource.threshold_file_for_tech(
+                            lowres_threshold_dir, tech
                         )
-                        masks["low_resource"] = result.mask.astype(bool)
-                        lowres_attrs = cf_low_resource.attrs(result)
+                        if not threshold_file.exists():
+                            lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"
+                        else:
+                            result = cf_low_resource.compute_grid_low_resource(
+                                cf_file,
+                                tech,
+                                bundle.dataset[time_name].values,
+                                threshold_file=threshold_file,
+                                lat_chunk=lowres_grid_lat_chunk,
+                            )
+                            masks["low_resource"] = result.mask.astype(bool)
+                            lowres_attrs = cf_low_resource.attrs(result)
                 except Exception as e:
                     logger.warning("%s 低资源计算失败：%s", tech, e)
                     lowres_skip_reason = f"低资源计算失败：{e}"

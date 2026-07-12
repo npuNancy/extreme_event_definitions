@@ -82,10 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="最近邻网格距离容差（单位：度，默认 %(default)s）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
-    p.add_argument("--cf_root", default="../data/cfs",
+    p.add_argument("--cf_root", default="data/cfs",
                    help="容量因子数据根目录，用于默认启用的低资源事件。")
-    p.add_argument("--lowres_baseline_years", default="2015-2029",
-                   help="低资源事件基线期，默认 2015-2029。")
+    p.add_argument("--lowres_threshold_dir",
+                   default="outputs/low_resource_thresholds/ERA5Land_2015-2025",
+                   help="ERA5Land 低资源阈值目录。")
+    p.add_argument("--lowres_baseline_years", default=None,
+                   help=argparse.SUPPRESS)
     p.add_argument("--lowres_cf_years", default="2015-2060",
                    help="CF 文件覆盖年份，用于查找 allmonths 文件。")
     p.add_argument("--lowres_station_chunk", type=int, default=128,
@@ -241,24 +244,30 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         if cf_file is None:
             lowres_skip_reason = f"未找到 CF 文件：cf_root={args.cf_root}"
         else:
-            try:
-                result = cf_low_resource.compute_station_low_resource(
-                    cf_file,
-                    tech,
-                    times_all,
-                    match.stations["lat"].to_numpy(np.float64),
-                    match.stations["lon"].to_numpy(np.float64),
-                    baseline_years=args.lowres_baseline_years,
-                    max_dist=args.max_dist,
-                    station_chunk=args.lowres_station_chunk,
-                    time_chunk=args.lowres_time_chunk,
-                )
-                masks_all["low_resource"] = result.mask.astype(bool)
-                lowres_valid = result.valid
-                lowres_attrs = cf_low_resource.attrs(result)
-            except Exception as e:
-                logger.warning("[%s/%s] 低资源计算失败：%s", region, tech, e)
-                lowres_skip_reason = f"低资源计算失败：{e}"
+            threshold_file = cf_low_resource.threshold_file_for_tech(
+                args.lowres_threshold_dir, tech
+            )
+            if not threshold_file.exists():
+                lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"
+            else:
+                try:
+                    result = cf_low_resource.compute_station_low_resource(
+                        cf_file,
+                        tech,
+                        times_all,
+                        match.stations["lat"].to_numpy(np.float64),
+                        match.stations["lon"].to_numpy(np.float64),
+                        threshold_file=threshold_file,
+                        max_dist=args.max_dist,
+                        station_chunk=args.lowres_station_chunk,
+                        time_chunk=args.lowres_time_chunk,
+                    )
+                    masks_all["low_resource"] = result.mask.astype(bool)
+                    lowres_valid = result.valid
+                    lowres_attrs = cf_low_resource.attrs(result)
+                except Exception as e:
+                    logger.warning("[%s/%s] 低资源计算失败：%s", region, tech, e)
+                    lowres_skip_reason = f"低资源计算失败：{e}"
     else:
         lowres_skip_reason = "用户通过 --no_low_resource 关闭"
 

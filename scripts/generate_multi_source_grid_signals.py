@@ -135,12 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="除信号文件外，同时保存标准化气象 NetCDF 文件。",
     )
     p.add_argument(
-        "--cf_root", default="../data/cfs",
-        help="容量因子数据根目录，用于默认启用的低资源事件（默认：../data/cfs）。",
+        "--cf_root", default="data/cfs",
+        help="容量因子数据根目录，用于默认启用的低资源事件（默认：data/cfs）。",
     )
     p.add_argument(
-        "--lowres_baseline_years", default="2015-2029",
-        help="低资源事件基线期（默认：2015-2029）。",
+        "--lowres_threshold_dir",
+        default="outputs/low_resource_thresholds/ERA5Land_2015-2025",
+        help="ERA5Land 低资源阈值目录（默认：outputs/low_resource_thresholds/ERA5Land_2015-2025）。",
+    )
+    p.add_argument(
+        "--lowres_baseline_years", default=None,
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--lowres_cf_years", default="2015-2060",

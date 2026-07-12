@@ -26,12 +26,28 @@ class LowResourceResult:
 
     mask: np.ndarray
     cf_file: Path
-    baseline_years: str
     timestep_hours: float
     window_steps: int
     grid_shape: tuple[int, int]
     lon360: bool
+    baseline_years: str | None = None
+    threshold_file: Path | None = None
+    threshold_source: str | None = None
+    threshold_baseline_years: str | None = None
+    threshold_match_max_dist: float | None = None
     valid: np.ndarray | None = None
+
+
+@dataclass
+class ThresholdGrid:
+    """ERA5Land 低资源阈值网格元数据。"""
+
+    path: Path
+    lat: np.ndarray
+    lon: np.ndarray
+    attrs: dict[str, str]
+    clim: np.ndarray | None = None
+    threshold: np.ndarray | None = None
 
 
 def parse_years(years: str) -> tuple[int, int]:
@@ -87,7 +103,8 @@ def infer_timestep_hours(times: pd.DatetimeIndex) -> float:
     """从时间轴推断小时步长。"""
     if len(times) < 2:
         raise ValueError("时间轴长度不足，无法推断时间步长")
-    diffs = np.diff(times.view("int64")).astype(np.float64) / 3.6e12
+    ns = times.to_numpy(dtype="datetime64[ns]").astype("int64")
+    diffs = np.diff(ns).astype(np.float64) / 3.6e12
     return float(np.nanmedian(diffs))
 
 
@@ -112,6 +129,23 @@ def cf_subdir(source: str, tech: str) -> str:
 def cf_var(tech: str) -> str:
     """返回 CF 变量名。"""
     return "solar_cf" if tech == "solar" else "wind_cf"
+
+
+def default_threshold_dir() -> Path:
+    """返回默认 ERA5Land 低资源阈值目录。"""
+    return Path("outputs/low_resource_thresholds/ERA5Land_2015-2025")
+
+
+def threshold_file_for_tech(
+    threshold_dir: str | Path,
+    tech: str,
+    baseline_years: str = "2015-2025",
+) -> Path:
+    """返回指定技术类型的 ERA5Land 阈值文件路径。"""
+    return (
+        Path(threshold_dir) /
+        f"low_resource_threshold_{tech}_ERA5Land_{baseline_years}.nc"
+    )
 
 
 def find_cf_file(
@@ -163,6 +197,69 @@ def find_cf_file(
     return None
 
 
+def load_low_resource_threshold(
+    threshold_file: str | Path,
+    *,
+    load_values: bool = False,
+) -> ThresholdGrid:
+    """读取 ERA5Land 低资源阈值文件。
+
+    默认只读取坐标和全局属性；``load_values=True`` 主要用于小样本测试。
+    正式计算按点/块读取 ``clim`` 和 ``threshold``，避免全量载入全球阈值。
+    """
+    path = Path(threshold_file)
+    with open_h5(path, "r") as f:
+        lat = f["lat"][:].astype(np.float64)
+        lon = f["lon"][:].astype(np.float64)
+        attrs = {k: decode_attr(v) for k, v in f.attrs.items()}
+        clim = f["clim"][:].astype(np.float32) if load_values else None
+        threshold = f["threshold"][:].astype(np.float32) if load_values else None
+    return ThresholdGrid(path=path, lat=lat, lon=lon, attrs=attrs,
+                         clim=clim, threshold=threshold)
+
+
+def match_threshold_grid(
+    threshold_lat: np.ndarray,
+    threshold_lon: np.ndarray,
+    target_lat: np.ndarray,
+    target_lon: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把目标点匹配到 ERA5Land 阈值规则经纬度网格。"""
+    lon_180 = sm.normalize_grid_lon(threshold_lon)
+    target_lon_180 = sm.lon_to_180(np.asarray(target_lon, dtype=np.float64))
+    return sm.nearest_index_regular(
+        np.asarray(threshold_lat, dtype=np.float64),
+        lon_180,
+        np.asarray(target_lat, dtype=np.float64),
+        target_lon_180,
+    )
+
+
+def _read_threshold_points(
+    threshold_file: str | Path,
+    lat_idx: np.ndarray,
+    lon_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按点读取 ``clim(12,24,K)`` 和 ``threshold(K,)``。"""
+    lat_idx = np.asarray(lat_idx, dtype=np.int64)
+    lon_idx = np.asarray(lon_idx, dtype=np.int64)
+    n_point = lat_idx.shape[0]
+    clim = np.empty((12, 24, n_point), dtype=np.float32)
+    threshold = np.empty(n_point, dtype=np.float32)
+
+    with open_h5(threshold_file, "r") as f:
+        clim_d = f["clim"]
+        threshold_d = f["threshold"]
+        for lat_i in np.unique(lat_idx):
+            pos = np.where(lat_idx == lat_i)[0]
+            unique_lon, inv = np.unique(lon_idx[pos], return_inverse=True)
+            clim_slice = clim_d[:, :, int(lat_i), unique_lon].astype(np.float32)
+            threshold_slice = threshold_d[int(lat_i), unique_lon].astype(np.float32)
+            clim[:, :, pos] = clim_slice[:, :, inv]
+            threshold[pos] = threshold_slice[inv]
+    return clim, threshold
+
+
 def _time_indices(source_times: pd.DatetimeIndex, target_times) -> np.ndarray:
     """把目标时间轴映射到 CF 时间轴索引。"""
     target = pd.DatetimeIndex(target_times)
@@ -186,11 +283,13 @@ def _baseline_mask(times: pd.DatetimeIndex, baseline_years: str) -> np.ndarray:
 def _low_resource_block(
     cf_block: np.ndarray,
     times: pd.DatetimeIndex,
-    baseline_mask: np.ndarray,
+    baseline_mask: np.ndarray | None,
     tech: str,
     lats: np.ndarray | None,
     lons: np.ndarray | None,
     window_steps: int,
+    clim_tbl: np.ndarray | None = None,
+    thr: np.ndarray | None = None,
 ) -> np.ndarray:
     """计算一个二维块 ``(time, cell)`` 的低资源信号。"""
     mod = registry.LOWRES[tech]
@@ -198,12 +297,16 @@ def _low_resource_block(
         return mod.signal(
             cf_block, times, lats, lons,
             base_mask=baseline_mask,
+            clim_tbl=clim_tbl,
+            thr=thr,
             window_steps=window_steps,
             mark_next_step=True,
         ).astype(np.int8)
     return mod.signal(
         cf_block, times,
         base_mask=baseline_mask,
+        clim_tbl=clim_tbl,
+        thr=thr,
         window_steps=window_steps,
         mark_next_step=True,
     ).astype(np.int8)
@@ -255,6 +358,8 @@ def compute_station_low_resource(
     station_lons: np.ndarray,
     *,
     baseline_years: str = "2015-2029",
+    threshold_file: str | Path | None = None,
+    threshold_match_max_dist: float | None = None,
     max_dist: float = sm.MAX_DIST_DEG,
     station_chunk: int = 128,
     time_chunk: int = 512,
@@ -269,7 +374,7 @@ def compute_station_low_resource(
         cf_shape = f[cf_var(tech)].shape
 
     out_idx = _time_indices(cf_times, output_times)
-    baseline = _baseline_mask(cf_times, baseline_years)
+    baseline = None if threshold_file is not None else _baseline_mask(cf_times, baseline_years)
     timestep_hours = infer_timestep_hours(cf_times)
     window_steps = window_steps_24h(cf_times)
 
@@ -279,6 +384,18 @@ def compute_station_low_resource(
         lat, lon_180, station_lats.astype(np.float64), sta_lon
     )
     valid = dist <= max_dist
+    threshold = None
+    threshold_lat_idx = threshold_lon_idx = None
+    if threshold_file is not None:
+        threshold = load_low_resource_threshold(threshold_file)
+        threshold_lat_idx, threshold_lon_idx, threshold_dist = match_threshold_grid(
+            threshold.lat,
+            threshold.lon,
+            station_lats.astype(np.float64),
+            station_lons.astype(np.float64),
+        )
+        th_max = max_dist if threshold_match_max_dist is None else threshold_match_max_dist
+        valid = valid & (threshold_dist <= th_max)
 
     tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
     cf_mm = _materialize_station_cf(cf_path, tech, lat_idx, lon_idx, time_chunk, tmp_dir)
@@ -290,9 +407,17 @@ def compute_station_low_resource(
         for c0 in range(0, n_station, station_chunk):
             c1 = min(c0 + station_chunk, n_station)
             block = np.asarray(cf_mm[:, c0:c1], dtype=np.float32)
+            clim_tbl = thr = None
+            if threshold_file is not None:
+                clim_tbl, thr = _read_threshold_points(
+                    threshold_file,
+                    threshold_lat_idx[c0:c1],
+                    threshold_lon_idx[c0:c1],
+                )
             sig_full = _low_resource_block(
                 block, cf_times, baseline, tech,
                 station_lats[c0:c1], station_lons[c0:c1], window_steps,
+                clim_tbl=clim_tbl, thr=thr,
             )
             out[:, c0:c1] = sig_full[out_idx, :]
     finally:
@@ -308,11 +433,20 @@ def compute_station_low_resource(
     return LowResourceResult(
         mask=out,
         cf_file=cf_path,
-        baseline_years=baseline_years,
+        baseline_years=None if threshold_file is not None else baseline_years,
         timestep_hours=timestep_hours,
         window_steps=window_steps,
         grid_shape=(int(cf_shape[1]), int(cf_shape[2])),
         lon360=sm.is_lon_360(lon),
+        threshold_file=Path(threshold_file) if threshold_file is not None else None,
+        threshold_source=(threshold.attrs.get("threshold_source") if threshold is not None else None),
+        threshold_baseline_years=(
+            threshold.attrs.get("baseline_years_effective")
+            if threshold is not None else None
+        ),
+        threshold_match_max_dist=(
+            max_dist if threshold_match_max_dist is None else threshold_match_max_dist
+        ) if threshold_file is not None else None,
         valid=valid,
     )
 
@@ -323,6 +457,8 @@ def compute_grid_low_resource(
     output_times,
     *,
     baseline_years: str = "2015-2029",
+    threshold_file: str | Path | None = None,
+    threshold_match_max_dist: float = sm.MAX_DIST_DEG,
     lat_chunk: int = 1,
 ) -> LowResourceResult:
     """计算网格级 ``signal_low_resource``，输出时间轴可为 CF 时间轴子集。"""
@@ -334,46 +470,79 @@ def compute_grid_low_resource(
         d = f[cf_var(tech)]
         n_time, n_lat, n_lon = d.shape
         out_idx = _time_indices(cf_times, output_times)
-        baseline = _baseline_mask(cf_times, baseline_years)
+        baseline = None if threshold_file is not None else _baseline_mask(cf_times, baseline_years)
         timestep_hours = infer_timestep_hours(cf_times)
         window_steps = window_steps_24h(cf_times)
         out = np.zeros((len(out_idx), n_lat, n_lon), dtype=np.int8)
+        threshold = load_low_resource_threshold(threshold_file) if threshold_file is not None else None
 
         for i0 in range(0, n_lat, lat_chunk):
             i1 = min(i0 + lat_chunk, n_lat)
             block = d[:, i0:i1, :].astype(np.float32).reshape(n_time, -1)
-            if tech == "solar":
-                lat2d, lon2d = np.meshgrid(lat[i0:i1], lon, indexing="ij")
-                lats = lat2d.ravel()
-                lons = lon2d.ravel()
-            else:
-                lats = None
-                lons = None
+            lat2d, lon2d = np.meshgrid(lat[i0:i1], lon, indexing="ij")
+            lats = lat2d.ravel()
+            lons = lon2d.ravel()
+            clim_tbl = thr = None
+            valid_flat = None
+            if threshold is not None:
+                th_lat_idx, th_lon_idx, th_dist = match_threshold_grid(
+                    threshold.lat, threshold.lon, lats, lons
+                )
+                valid_flat = th_dist <= threshold_match_max_dist
+                clim_tbl, thr = _read_threshold_points(
+                    threshold_file, th_lat_idx, th_lon_idx
+                )
             sig_full = _low_resource_block(
-                block, cf_times, baseline, tech, lats, lons, window_steps
+                block, cf_times, baseline, tech,
+                lats if tech == "solar" else None,
+                lons if tech == "solar" else None,
+                window_steps,
+                clim_tbl=clim_tbl,
+                thr=thr,
             )
+            if valid_flat is not None:
+                sig_full[:, ~valid_flat] = 0
             out[:, i0:i1, :] = sig_full[out_idx, :].reshape(len(out_idx), i1 - i0, n_lon)
             logger.info("低资源网格块写入 lat %d:%d", i0, i1)
 
     return LowResourceResult(
         mask=out,
         cf_file=cf_path,
-        baseline_years=baseline_years,
+        baseline_years=None if threshold_file is not None else baseline_years,
         timestep_hours=timestep_hours,
         window_steps=window_steps,
         grid_shape=(int(n_lat), int(n_lon)),
         lon360=sm.is_lon_360(lon),
+        threshold_file=Path(threshold_file) if threshold_file is not None else None,
+        threshold_source=(threshold.attrs.get("threshold_source") if threshold is not None else None),
+        threshold_baseline_years=(
+            threshold.attrs.get("baseline_years_effective")
+            if threshold is not None else None
+        ),
+        threshold_match_max_dist=threshold_match_max_dist if threshold_file is not None else None,
     )
 
 
 def attrs(result: LowResourceResult) -> dict[str, str]:
     """生成低资源相关 NetCDF 属性。"""
-    return {
+    out = {
         "low_resource_source": "capacity_factor",
         "low_resource_cf_file": str(result.cf_file),
-        "low_resource_baseline_years": result.baseline_years,
         "low_resource_window_hours": "24",
         "low_resource_window_steps": str(result.window_steps),
         "low_resource_timestep_hours": f"{result.timestep_hours:g}",
         "low_resource_mark_next_step": "true",
     }
+    if result.threshold_file is not None:
+        out.update({
+            "low_resource_threshold_file": str(result.threshold_file),
+            "low_resource_threshold_source": result.threshold_source or "ERA5Land",
+            "low_resource_threshold_baseline_years": result.threshold_baseline_years or "",
+            "low_resource_threshold_match_max_dist_deg": (
+                "" if result.threshold_match_max_dist is None
+                else f"{result.threshold_match_max_dist:g}"
+            ),
+        })
+    elif result.baseline_years is not None:
+        out["low_resource_baseline_years"] = result.baseline_years
+    return out

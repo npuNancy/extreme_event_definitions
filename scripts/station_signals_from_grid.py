@@ -76,10 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="第一阶段网格信号根目录（从这里读取）。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
-    p.add_argument("--cf_root", default="../data/cfs",
+    p.add_argument("--cf_root", default="data/cfs",
                    help="容量因子数据根目录，用于默认启用的低资源事件。")
-    p.add_argument("--lowres_baseline_years", default="2015-2029",
-                   help="低资源事件基线期，默认 2015-2029。")
+    p.add_argument("--lowres_threshold_dir",
+                   default="outputs/low_resource_thresholds/ERA5Land_2015-2025",
+                   help="ERA5Land 低资源阈值目录。")
+    p.add_argument("--lowres_baseline_years", default=None,
+                   help=argparse.SUPPRESS)
     p.add_argument("--lowres_cf_years", default="2015-2060",
                    help="CF 文件覆盖年份，用于查找 allmonths 文件。")
     p.add_argument("--lowres_grid_lat_chunk", type=int, default=1,
@@ -220,7 +223,10 @@ def _process_region(adapter, args, country_stations, region, scenario, techs) ->
                 for key in (
                     "low_resource_source",
                     "low_resource_cf_file",
-                    "low_resource_baseline_years",
+                    "low_resource_threshold_file",
+                    "low_resource_threshold_source",
+                    "low_resource_threshold_baseline_years",
+                    "low_resource_threshold_match_max_dist_deg",
                     "low_resource_window_hours",
                     "low_resource_window_steps",
                     "low_resource_timestep_hours",

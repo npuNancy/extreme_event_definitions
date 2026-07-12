@@ -74,9 +74,8 @@ def low_resource(resource, time, pct=PCT, base_mask=None, night=None,
     time     : DatetimeIndex (T,)
     base_mask: 基线期布尔(T,) 推荐固定 1987-2016 (默认全期)
     night    : 光伏夜间布尔 (T,K) (太阳高度角<=0); 风电传 None
-    clim_tbl/thr: 可传预计算的气候态(12,24,K)/每站阈值(K,)复用;否则按 base_mask 内部计算。
-    注意: 严格对齐参考需"基线期算clim/thr, 目标年单独算roll"——此时分两次调用并传入
-          clim_tbl/thr; 单次调用(base_mask)是便捷近似。"""
+    clim_tbl/thr: 可传外部基线预计算的气候态(12,24,K)/每点阈值(K,)复用；
+                  未传时才按 base_mask 在当前 resource 内部计算。"""
     t = pd.DatetimeIndex(time)
     roll = roll24c(resource) if window_steps is None else roll_centered(resource, window_steps)
     if clim_tbl is None:

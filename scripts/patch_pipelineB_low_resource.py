@@ -25,6 +25,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import common  # noqa: E402
+from grid_extreme_signals import cf_low_resource  # noqa: E402
 
 logger = logging.getLogger("patch_pipelineB_low_resource")
 
@@ -32,7 +33,8 @@ logger = logging.getLogger("patch_pipelineB_low_resource")
 DEFAULT_OUTPUT_ROOT = (
     "../outputs/station_signals_pipelineB/regional_bcsd/NESM3"
 )
-DEFAULT_CF_ROOT = "../data/cfs"
+DEFAULT_CF_ROOT = "data/cfs"
+DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/ERA5Land_2015-2025"
 
 
 def lon_to_180(lon):
@@ -79,7 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output_root", default=DEFAULT_OUTPUT_ROOT,
                    help="已有 Pipeline B NESM3 结果根目录。")
     p.add_argument("--cf_root", default=DEFAULT_CF_ROOT,
-                   help="CF 数据根目录，默认 ../data/cfs。")
+                   help="CF 数据根目录，默认 data/cfs。")
+    p.add_argument("--threshold_dir", default=DEFAULT_THRESHOLD_DIR,
+                   help="ERA5Land 低资源阈值目录。")
     p.add_argument("--model", default="NESM3")
     p.add_argument("--region", default="all",
                    help="区域名或 all。")
@@ -87,7 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ssp126/ssp245/ssp585 或 all。")
     p.add_argument("--tech", choices=["wind", "solar", "both"], default="both")
     p.add_argument("--years", default="2015-2060")
-    p.add_argument("--baseline_years", default="2015-2029")
+    p.add_argument("--baseline_years", default=None,
+                   help=argparse.SUPPRESS)
     p.add_argument("--station_chunk", type=int, default=128,
                    help="低资源计算时每块场站数。")
     p.add_argument("--time_chunk", type=int, default=512,
@@ -154,7 +159,8 @@ def _read_time(f: h5py.File) -> pd.DatetimeIndex:
 def _infer_timestep_hours(times: pd.DatetimeIndex) -> float:
     if len(times) < 2:
         raise ValueError("时间轴长度不足，无法推断时间步长")
-    diffs = np.diff(times.view("int64")).astype(np.float64) / 3.6e12
+    ns = times.to_numpy(dtype="datetime64[ns]").astype("int64")
+    diffs = np.diff(ns).astype(np.float64) / 3.6e12
     return float(np.nanmedian(diffs))
 
 
@@ -363,8 +369,7 @@ def _set_csv_list_attr(f: h5py.File, key: str, values: list[str]) -> None:
     _set_str_attr(f, key, ",".join(values))
 
 
-def _update_attrs(f: h5py.File, cf_file: Path, baseline_years: str,
-                  timestep_hours: float, window_steps: int) -> None:
+def _update_attrs(f: h5py.File, attrs: dict[str, str]) -> None:
     supported = _csv_list_attr(f, "supported_events")
     if "low_resource" not in supported:
         supported.append("low_resource")
@@ -373,13 +378,10 @@ def _update_attrs(f: h5py.File, cf_file: Path, baseline_years: str,
     skipped = [x for x in _csv_list_attr(f, "skipped_events") if x != "low_resource"]
     _set_csv_list_attr(f, "skipped_events", skipped)
 
-    _set_str_attr(f, "low_resource_source", "capacity_factor")
-    _set_str_attr(f, "low_resource_cf_file", str(cf_file))
-    _set_str_attr(f, "low_resource_baseline_years", baseline_years)
-    _set_str_attr(f, "low_resource_window_hours", "24")
-    _set_str_attr(f, "low_resource_window_steps", str(window_steps))
-    _set_str_attr(f, "low_resource_timestep_hours", f"{timestep_hours:g}")
-    _set_str_attr(f, "low_resource_mark_next_step", "true")
+    if "low_resource_baseline_years" in f.attrs:
+        del f.attrs["low_resource_baseline_years"]
+    for key, value in attrs.items():
+        _set_str_attr(f, key, str(value))
 
 
 def _process_file(path: Path, args) -> bool:
@@ -387,6 +389,11 @@ def _process_file(path: Path, args) -> bool:
     cf_file = _find_cf_file(Path(args.cf_root), args.model, region, scenario, tech)
     if cf_file is None:
         logger.warning("[%s/%s/%s] 未找到 CF 文件，跳过", region, scenario, tech)
+        return False
+    threshold_file = cf_low_resource.threshold_file_for_tech(args.threshold_dir, tech)
+    if not threshold_file.exists():
+        logger.warning("[%s/%s/%s] 未找到 ERA5Land 阈值文件 %s，跳过",
+                       region, scenario, tech, threshold_file)
         return False
 
     logger.info("[%s/%s/%s] 处理 %s", region, scenario, tech, path)
@@ -404,23 +411,6 @@ def _process_file(path: Path, args) -> bool:
         n_time = out["time"].shape[0]
         n_station = out["station"].shape[0]
 
-        with _open_h5(cf_file, "r") as cf:
-            cf_times = _read_time(cf)
-            cf_shape = cf[_cf_var(tech)].shape
-        if len(cf_times) != n_time or not np.array_equal(cf_times.values, out_times.values):
-            raise ValueError(
-                f"{path}: CF 时间轴与输出时间轴不一致，"
-                f"cf={len(cf_times)} output={len(out_times)}"
-            )
-
-        lat_idx, lon_idx, cf_valid, n_lat, n_lon, lon360 = _match_cf_grid(
-            cf_file, station_lats, station_lons, max_dist
-        )
-        n_bad = int((~cf_valid).sum())
-        if n_bad:
-            logger.warning("[%s/%s/%s] %d/%d 个场站超过 CF 网格距离阈值",
-                           region, scenario, tech, n_bad, n_station)
-
         dset, created = _ensure_signal_dataset(
             out, "signal_low_resource", (n_time, n_station),
             args.compress_level, args.overwrite,
@@ -428,54 +418,30 @@ def _process_file(path: Path, args) -> bool:
         if not created:
             return False
 
-        baseline_y0, baseline_y1 = _parse_years(args.baseline_years)
         years = out_times.year.to_numpy()
-        baseline_mask = (years >= baseline_y0) & (years <= baseline_y1)
-        if not np.any(baseline_mask):
-            raise ValueError(f"{path}: 基线期 {args.baseline_years} 与输出时间轴无交集")
-
-        timestep_hours = _infer_timestep_hours(out_times)
-        window_steps = _window_steps_24h(out_times)
-        valid = (match_dist <= max_dist) & cf_valid
-        active = years[:, None] >= activation_years[None, :]
-
-        temp_dir = Path(tempfile.gettempdir())
-        cf_mm = _materialize_station_cf(
-            cf_file, tech, lat_idx, lon_idx, args.time_chunk, temp_dir
+        result = cf_low_resource.compute_station_low_resource(
+            cf_file,
+            tech,
+            out_times,
+            station_lats,
+            station_lons,
+            threshold_file=threshold_file,
+            max_dist=max_dist,
+            station_chunk=args.station_chunk,
+            time_chunk=args.time_chunk,
         )
-        tmp_path = Path(cf_mm.filename)
-        try:
-            for c0 in range(0, n_station, args.station_chunk):
-                c1 = min(c0 + args.station_chunk, n_station)
-                block = np.asarray(cf_mm[:, c0:c1], dtype=np.float32)
-                sig = _compute_low_resource_block(
-                    block,
-                    out_times,
-                    baseline_mask,
-                    tech,
-                    station_lats[c0:c1],
-                    station_lons[c0:c1],
-                    window_steps,
-                )
-                sig &= active[:, c0:c1]
-                sig &= valid[None, c0:c1]
-                dset[:, c0:c1] = sig
-                logger.info("[%s/%s/%s] 写入场站列 %d:%d", region, scenario, tech, c0, c1)
-        finally:
-            try:
-                cf_mm._mmap.close()
-            except Exception:
-                pass
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+        valid = (match_dist <= max_dist) & result.valid
+        active = years[:, None] >= activation_years[None, :]
+        sig = result.mask.astype(bool)
+        sig &= active
+        sig &= valid[None, :]
+        dset[:, :] = sig.astype(np.int8)
 
-        _update_attrs(out, cf_file, args.baseline_years, timestep_hours, window_steps)
+        _update_attrs(out, cf_low_resource.attrs(result))
         frac = float(np.mean(dset[:])) if n_time and n_station else 0.0
         logger.info(
-            "[%s/%s/%s] 完成 low_resource，事件比例 %.6f，CF网格=%dx%d lon360=%s shape=%s",
-            region, scenario, tech, frac, n_lat, n_lon, lon360, cf_shape,
+            "[%s/%s/%s] 完成 low_resource，事件比例 %.6f，CF文件=%s 阈值=%s",
+            region, scenario, tech, frac, cf_file, threshold_file,
         )
         return True
 
