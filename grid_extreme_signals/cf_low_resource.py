@@ -36,6 +36,7 @@ class LowResourceResult:
     threshold_baseline_years: str | None = None
     threshold_match_max_dist: float | None = None
     valid: np.ndarray | None = None
+    target_spatial_interp: str = "nearest"
 
 
 @dataclass
@@ -546,6 +547,43 @@ def _materialize_station_cf(
                      shape=(n_time, lat_idx.shape[0]))
 
 
+def _materialize_station_cf_weighted(
+    cf_file: Path,
+    tech: str,
+    match: sm.StationSpatialWeights,
+    time_chunk: int,
+    temp_dir: Path,
+) -> np.memmap:
+    """把场站加权抽取后的 CF 时间序列落到临时 memmap。"""
+    var = cf_var(tech)
+    with open_h5(cf_file, "r") as f:
+        d = f[var]
+        n_time = d.shape[0]
+        n_station = len(match)
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="lowres_cf_", suffix=".dat", dir=temp_dir, delete=False
+        )
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        arr = np.memmap(tmp_path, dtype=np.float32, mode="w+",
+                        shape=(n_time, n_station))
+        try:
+            for t0 in range(0, n_time, time_chunk):
+                t1 = min(t0 + time_chunk, n_time)
+                slab = d[t0:t1, :, :].astype(np.float32)
+                arr[t0:t1, :] = sm.gather_to_stations_weighted(slab, match)
+            arr.flush()
+        except Exception:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            raise
+        arr._mmap.close()
+    return np.memmap(tmp_path, dtype=np.float32, mode="r",
+                     shape=(n_time, len(match)))
+
+
 def compute_station_low_resource(
     cf_file: str | Path,
     tech: str,
@@ -557,11 +595,17 @@ def compute_station_low_resource(
     threshold_file: str | Path | None = None,
     threshold_match_max_dist: float | None = None,
     max_dist: float = sm.MAX_DIST_DEG,
+    spatial_interp: str = "nearest",
     station_chunk: int = 128,
     time_chunk: int = 512,
     temp_dir: str | Path | None = None,
 ) -> LowResourceResult:
     """计算场站级 ``signal_low_resource``。"""
+    spatial_interp = spatial_interp.lower()
+    if spatial_interp not in {"nearest", "bilinear"}:
+        raise ValueError(
+            f"当前只支持 spatial_interp='nearest' 或 'bilinear'，收到 {spatial_interp!r}"
+        )
     cf_path = Path(cf_file)
     with open_h5(cf_path, "r") as f:
         cf_times = read_time(f)
@@ -574,12 +618,18 @@ def compute_station_low_resource(
     timestep_hours = infer_timestep_hours(cf_times)
     window_steps = window_steps_24h(cf_times)
 
-    lon_180 = sm.normalize_grid_lon(lon)
-    sta_lon = sm.lon_to_180(station_lons.astype(np.float64))
-    lat_idx, lon_idx, dist = sm.nearest_index_regular(
-        lat, lon_180, station_lats.astype(np.float64), sta_lon
+    stations_df = pd.DataFrame({
+        "lat": np.asarray(station_lats, dtype=np.float64),
+        "lon": np.asarray(station_lons, dtype=np.float64),
+    })
+    cf_match = sm.match_regular_weighted(
+        lat,
+        lon,
+        stations_df,
+        method=spatial_interp,
+        max_dist=max_dist,
     )
-    valid = dist <= max_dist
+    valid = cf_match.valid.copy()
     threshold = None
     threshold_lat_idx = threshold_lon_idx = None
     sparse_station_idx = None
@@ -607,7 +657,23 @@ def compute_station_low_resource(
             valid = valid & (threshold_dist <= th_max)
 
     tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
-    cf_mm = _materialize_station_cf(cf_path, tech, lat_idx, lon_idx, time_chunk, tmp_dir)
+    if spatial_interp == "nearest":
+        cf_mm = _materialize_station_cf(
+            cf_path,
+            tech,
+            cf_match.idx0[:, 0],
+            cf_match.idx1[:, 0],
+            time_chunk,
+            tmp_dir,
+        )
+    else:
+        cf_mm = _materialize_station_cf_weighted(
+            cf_path,
+            tech,
+            cf_match,
+            time_chunk,
+            tmp_dir,
+        )
     tmp_path = Path(cf_mm.filename)
     n_out = len(out_idx)
     n_station = len(station_lats)
@@ -663,6 +729,7 @@ def compute_station_low_resource(
             max_dist if threshold_match_max_dist is None else threshold_match_max_dist
         ) if threshold_file is not None else None,
         valid=valid,
+        target_spatial_interp=spatial_interp,
     )
 
 
@@ -675,6 +742,7 @@ def attrs(result: LowResourceResult) -> dict[str, str]:
         "low_resource_window_steps": str(result.window_steps),
         "low_resource_timestep_hours": f"{result.timestep_hours:g}",
         "low_resource_mark_next_step": "true",
+        "low_resource_target_spatial_interp": result.target_spatial_interp,
     }
     if result.threshold_file is not None:
         out.update({

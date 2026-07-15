@@ -118,3 +118,28 @@ def test_station_low_resource_uses_sparse_threshold(tmp_path):
     assert result.mask.dtype == np.int8
     assert result.mask.shape == (16, 1)
     assert result.mask[:, 0].sum() > 0
+
+
+def test_station_low_resource_accepts_bilinear_target_cf(tmp_path):
+    times = pd.date_range("2015-01-01", periods=16, freq="3h")
+    cf_file = tmp_path / "target_cf.nc"
+    threshold_file = tmp_path / "threshold_sparse.nc"
+    values = np.ones((16, 2, 2), dtype=np.float32)
+    _write_cf(cf_file, "wind", times, values)
+    _write_sparse_threshold(threshold_file, "wind", threshold_value=0.01)
+
+    result = cf_low_resource.compute_station_low_resource(
+        cf_file,
+        "wind",
+        times,
+        np.array([0.25]),
+        np.array([10.25]),
+        threshold_file=threshold_file,
+        max_dist=1.0,
+        spatial_interp="bilinear",
+    )
+
+    assert result.target_spatial_interp == "bilinear"
+    assert result.valid.tolist() == [True]
+    attrs = cf_low_resource.attrs(result)
+    assert attrs["low_resource_target_spatial_interp"] == "bilinear"

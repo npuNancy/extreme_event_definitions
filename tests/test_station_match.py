@@ -8,8 +8,10 @@ country polygon filtering with activation-year deduplication.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -125,6 +127,110 @@ class TestMatchAndGather:
         assert out.shape == (3, 1)
         # station (lat_idx=1, lon_idx=1) -> arr[:,1,1]
         np.testing.assert_array_equal(out[:, 0], arr[:, 1, 1])
+
+    def test_match_regular_weighted_nearest_matches_existing(self):
+        grid_lat = np.array([0.0, 10.0])
+        grid_lon = np.array([0.0, 0.1])
+        sta = pd.DataFrame({"lat": [10.0], "lon": [0.1]})
+
+        nearest = sm.match_regular(grid_lat, grid_lon, sta)
+        weighted = sm.match_regular_weighted(grid_lat, grid_lon, sta, method="nearest")
+
+        assert weighted.method == "nearest"
+        assert weighted.idx0.shape == (1, 1)
+        assert weighted.idx0[0, 0] == nearest.idx0[0]
+        assert weighted.idx1[0, 0] == nearest.idx1[0]
+        np.testing.assert_allclose(weighted.weight, np.array([[1.0]], dtype=np.float32))
+
+    def test_match_regular_weighted_bilinear_values(self):
+        grid_lat = np.array([1.0, 0.0])
+        grid_lon = np.array([10.0, 11.0])
+        sta = pd.DataFrame({"lat": [0.25], "lon": [10.25]})
+
+        match = sm.match_regular_weighted(grid_lat, grid_lon, sta, method="bilinear", max_dist=1.0)
+        arr = np.array([[[10.0, 20.0], [30.0, 40.0]]], dtype=np.float32)
+        out = sm.gather_to_stations_weighted(arr, match)
+
+        assert match.idx0.tolist() == [[1, 1, 0, 0]]
+        assert match.idx1.tolist() == [[0, 1, 0, 1]]
+        np.testing.assert_allclose(match.weight.sum(axis=1), np.array([1.0]))
+        np.testing.assert_allclose(
+            match.weight[0],
+            np.array([0.5625, 0.1875, 0.1875, 0.0625], dtype=np.float32),
+        )
+        assert out[0, 0] == pytest.approx(27.5)
+
+    def test_weighted_gather_renormalizes_missing_values(self):
+        grid_lat = np.array([1.0, 0.0])
+        grid_lon = np.array([10.0, 11.0])
+        sta = pd.DataFrame({"lat": [0.25], "lon": [10.25]})
+        match = sm.match_regular_weighted(grid_lat, grid_lon, sta, method="bilinear", max_dist=1.0)
+        arr = np.array([[[10.0, 20.0], [30.0, np.nan]]], dtype=np.float32)
+
+        out = sm.gather_to_stations_weighted(arr, match)
+
+        expected = (0.5625 * 30.0 + 0.1875 * 10.0 + 0.0625 * 20.0) / (0.5625 + 0.1875 + 0.0625)
+        assert out[0, 0] == pytest.approx(expected)
+
+    def test_match_2d_weighted_rejects_bilinear(self):
+        lat2d = np.array([[0.0, 0.0], [1.0, 1.0]])
+        lon2d = np.array([[0.0, 1.0], [0.0, 1.0]])
+        sta = pd.DataFrame({"lat": [0.5], "lon": [0.5]})
+
+        with pytest.raises(ValueError, match="只支持"):
+            sm.match_2d_weighted(lat2d, lon2d, sta, method="bilinear")
+
+    def test_write_station_signals_records_bilinear_weights(self):
+        stations = pd.DataFrame({
+            "lon": [10.25],
+            "lat": [0.25],
+            "activation_year": [2030],
+            "capacity_gw": [1.0],
+        })
+        match = sm.StationSpatialWeights(
+            stations=stations,
+            idx0=np.array([[1, 1, 0, 0]], dtype=np.int64),
+            idx1=np.array([[0, 1, 0, 1]], dtype=np.int64),
+            weight=np.array([[0.5625, 0.1875, 0.1875, 0.0625]], dtype=np.float32),
+            dist_deg=np.array([0.25], dtype=np.float64),
+            valid=np.array([True]),
+            grid_kind="regular_latlon",
+            method="bilinear",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "station_signals.nc"
+            sm.write_station_signals(
+                out_path,
+                {"signal_high_wind": np.array([[1]], dtype=np.int8)},
+                np.array([np.datetime64("2030-01-01T00:00:00")]),
+                match,
+                "wind",
+                source="regional_bcsd",
+                model="TEST",
+                region="Nowhere",
+                scenario="ssp126",
+                source_csv="stations.csv",
+                pipeline="B",
+                supported=["high_wind"],
+                skipped=[],
+                skipped_reasons={},
+                max_dist=1.0,
+                activation_mask_on=True,
+                compress_level=1,
+            )
+            with h5py.File(out_path, "r") as f:
+                method = f.attrs["match_method"]
+                if isinstance(method, bytes):
+                    method = method.decode("utf-8")
+                points = f.attrs["match_weight_points"]
+                if isinstance(points, bytes):
+                    points = points.decode("utf-8")
+                assert method == "bilinear"
+                assert str(points) == "4"
+                assert f["match_idx0"].shape == (1, 4)
+                assert f["match_idx1"].shape == (1, 4)
+                assert f["match_weight"].shape == (1, 4)
+                np.testing.assert_allclose(f["match_weight"][:].sum(axis=1), [1.0])
 
 
 # ---------------------------------------------------------------------

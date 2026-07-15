@@ -145,6 +145,7 @@ python scripts/station_signals_direct.py \
 | `--require_events` | 空 | 显式要求必须生成的事件；缺失输入时报错 |
 | `--overwrite` | `False` | 覆盖已有输出 |
 | `--dry_run` | `False` | 仅打印任务计划 |
+| `--spatial_interp` | `nearest` | 场站到网格数据抽取方法；规则经纬度网格支持 `nearest`/`bilinear`，NAM-12 当前只支持 `nearest` |
 | `--lowres_threshold_dir` | `outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025` | ERA5Land 2015-2025 SSP 场站稀疏低资源阈值目录 |
 
 场站级低资源阈值需先按 SSP + 技术类型预计算，例如：

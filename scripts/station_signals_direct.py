@@ -6,8 +6,9 @@
   1. 通过现有多数据源适配器（如 ``RegionalBcsdAdapter``）加载并标准化气象数据，路径与 Phase 1 一致；
   2. 只选择落在该区域国家多边形内的场站（Natural Earth 点在多边形内判断），并以
      ``activation_year = min(year)`` 去重；
-  3. 将每个场站匹配到最近网格（逐文件把经度归一到 ``[-180, 180)``；BCSD 经度约定随区域而变）；
-  4. 将标准化气象变量提取到匹配网格，形成 ``(time, n_stations)`` 数组，并运行
+  3. 将每个场站匹配到网格（默认最近邻，可选规则经纬度双线性；逐文件把经度归一到
+     ``[-180, 180)``；BCSD 经度约定随区域而变）；
+  4. 将标准化气象变量按指定空间方法提取到场站，形成 ``(time, n_stations)`` 数组，并运行
      ``registry.simple_signals``；
   5. 应用投产年份掩膜（投产前信号为 0）和距离容差掩膜，然后按 ``(region, tech, scenario)``
      写出场站级 NetCDF。
@@ -80,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--shp", default=DEFAULT_SHP, help="Natural Earth 国家边界 shapefile。")
     p.add_argument("--max_dist", type=float, default=sm.MAX_DIST_DEG,
                    help="最近邻网格距离容差（单位：度，默认 %(default)s）。")
+    p.add_argument("--spatial_interp", default="nearest",
+                   help="场站到网格数据抽取方法：nearest 或 bilinear；默认 nearest。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
     p.add_argument("--cf_root", default="data/cfs",
@@ -119,7 +122,19 @@ def _bundle_spatial_axes(bundle) -> tuple[str, str, str]:
     return time_name, lat_name, lon_name
 
 
-def _gather_weather(bundle, match: sm.StationMatch) -> dict[str, np.ndarray]:
+def _validate_spatial_interp(source: str, method: str) -> str:
+    """校验站点级空间抽取方法。"""
+    method = method.lower()
+    if method not in {"nearest", "bilinear"}:
+        raise ValueError(
+            f"当前只支持 --spatial_interp nearest 或 bilinear，收到 {method!r}"
+        )
+    if source == "cordex_nam12" and method != "nearest":
+        raise ValueError("NAM-12 当前只支持 --spatial_interp nearest")
+    return method
+
+
+def _gather_weather(bundle, match: sm.StationMatch | sm.StationSpatialWeights) -> dict[str, np.ndarray]:
     """将 bundle 网格上的标准化气象变量抽取到场站。
 
     返回 ``{var_name: (time, n_stations) float32}``。
@@ -127,9 +142,11 @@ def _gather_weather(bundle, match: sm.StationMatch) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
     for var in ("temp_C", "wind_ms", "precip_mmh", "rsds", "rh_pct", "dust_aod"):
         if var in bundle.dataset.data_vars:
-            out[var] = sm.gather_to_stations(
-                bundle.dataset[var].values.astype(np.float32), match
-            )
+            values = bundle.dataset[var].values.astype(np.float32)
+            if isinstance(match, sm.StationSpatialWeights):
+                out[var] = sm.gather_to_stations_weighted(values, match)
+            else:
+                out[var] = sm.gather_to_stations(values, match)
     return out
 
 
@@ -173,7 +190,8 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         logger.info("[%s/%s] [试运行] 将写出 %s", region, tech, out_path)
         return out_path
 
-    match: sm.StationMatch | None = None
+    spatial_interp = _validate_spatial_interp(args.source, args.spatial_interp)
+    match: sm.StationMatch | sm.StationSpatialWeights | None = None
     masks_acc: dict[str, list[np.ndarray]] = {}
     times_acc: list[np.ndarray] = []
     skipped_inputs: dict[str, str] = {}
@@ -198,14 +216,19 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
         if match is None:
             grid_lat = bundle.dataset[lat_name].values
             grid_lon = bundle.dataset[lon_name].values
-            match = sm.match_regular(grid_lat, grid_lon, stations, max_dist=args.max_dist)
+            match = sm.match_regular_weighted(
+                grid_lat, grid_lon, stations,
+                method=spatial_interp,
+                max_dist=args.max_dist,
+            )
             n_bad = int((~match.valid).sum())
             if n_bad:
                 logger.warning("[%s/%s] %d/%d 个场站超过最大距离=%.2f°（将置零）",
                                region, tech, n_bad, len(match), args.max_dist)
             skipped_inputs = dict(bundle.skipped_inputs)
-            logger.info("[%s/%s] 已匹配 %d 个场站（网格 %dx%d，经度为360制=%s）",
+            logger.info("[%s/%s] 已匹配 %d 个场站（方法=%s，网格 %dx%d，经度为360制=%s）",
                         region, tech, len(match),
+                        spatial_interp,
                         grid_lat.size, grid_lon.size, sm.is_lon_360(grid_lon))
 
         weather = _gather_weather(bundle, match)
@@ -269,6 +292,7 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
                         match.stations["lon"].to_numpy(np.float64),
                         threshold_file=threshold_file,
                         max_dist=args.max_dist,
+                        spatial_interp=spatial_interp,
                         station_chunk=args.lowres_station_chunk,
                         time_chunk=args.lowres_time_chunk,
                     )
@@ -330,6 +354,7 @@ def main() -> None:
                         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
     args = build_parser().parse_args()
+    args.spatial_interp = _validate_spatial_interp(args.source, args.spatial_interp)
 
     if args.source != "regional_bcsd":
         raise NotImplementedError(
