@@ -28,7 +28,7 @@ import xarray as xr
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import registry
 from events import wind_low_resource, solar_low_resource
-import common
+from tools import common
 
 RESOURCE_KEY = {"wind": "wind_ms", "solar": "rsds"}   # 低资源资源变量(nc 中的名字)
 

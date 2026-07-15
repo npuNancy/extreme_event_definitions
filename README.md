@@ -7,8 +7,15 @@
 ```
 extreme_event_definitions/
   README.md
+  step1_low_resource_thresholds.py          # ① ERA5Land 2015-2025 风光 CF 预计算低资源阈值
+  step2_complete_extreme_events.py          # 两阶段②：未来极端事件，包含 low_resource
+  step2_split_E1_weather_extremes.py        # 三阶段②：未来极端事件，不包含 low_resource
+  step2_split_E2_low_resource.py            # 三阶段③：补写未来 low_resource 到三阶段②输出
   registry.py                              # 汇总注册表: simple_signals() 一次取全部
-  common.py                                # 低资源共享算法(24h滚动+clim288+P5, 太阳高度角)
+  tools/
+    common.py                              # 低资源共享算法(24h滚动+clim288+P5, 太阳高度角)
+    merge_weather_nc.py                    # 工具：合并场站天气 NC
+    plot_raw.py                            # 工具：历史 benchmark 绘图
   events/                                  # 共享事件定义 (每个事件一个文件)
   legacy_station_pipeline/                 # 旧的真实场站流程 (已迁移)
     weather_loaders.py                       # ERA5-Land + MERRA-2 数据调用
@@ -65,6 +72,77 @@ extreme_event_definitions/
 ### 跳过事件的原因
 
 当数据源缺少某个事件所需的输入变量时，该事件不会出现在输出文件中。输出文件属性 `skipped_events` 和 `skipped_event_reasons` 记录了所有跳过事件及其原因。
+
+## 推荐流程入口
+
+当前低资源事件使用 ERA5Land 2015-2025 风光 CF 先计算阈值；未来模式/SSP
+只负责被判定是否发生事件。项目根目录提供两种入口组合。
+
+### 两阶段流程
+
+适用于未来模式/SSP 的目标 CF 已经可用，希望一次性输出所有事件：
+
+```bash
+python step1_low_resource_thresholds.py \
+  --cf_root data/cfs \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --scenario ssp126 \
+  --tech both \
+  --baseline_years 2015-2025
+
+python step2_complete_extreme_events.py \
+  --source regional_bcsd \
+  --data_dir data/bcsd_outputs \
+  --model NESM3 \
+  --scenario ssp126 \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --region all \
+  --years 2030-2060 \
+  --tech both \
+  --allow_unit_inference \
+  --allow_missing_optional
+```
+
+### 三阶段流程
+
+适用于先判断普通极端事件，等未来模式/SSP 的 CF 准备好后再补写低资源事件：
+
+```bash
+python step1_low_resource_thresholds.py \
+  --cf_root data/cfs \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --scenario ssp126 \
+  --tech both \
+  --baseline_years 2015-2025
+
+python step2_split_E1_weather_extremes.py \
+  --source regional_bcsd \
+  --data_dir data/bcsd_outputs \
+  --model NESM3 \
+  --scenario ssp126 \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --region all \
+  --years 2030-2060 \
+  --tech both \
+  --allow_unit_inference \
+  --allow_missing_optional
+
+python step2_split_E2_low_resource.py \
+  --output_root outputs/station_signals/regional_bcsd/NESM3 \
+  --cf_root data/cfs \
+  --threshold_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025 \
+  --model NESM3 \
+  --scenario ssp126 \
+  --tech both \
+  --years 2030-2060 \
+  --overwrite
+```
+
+说明：
+
+- `step2_complete_extreme_events.py` 会调用场站流程并默认计算 `low_resource`。
+- `step2_split_E1_weather_extremes.py` 会强制附加 `--no_low_resource`。
+- `step2_split_E2_low_resource.py` 会读取 E1 输出文件中的 `match_method`，确保低资源目标 CF 抽取方式与 E1 一致。
 
 ## 运行示例
 

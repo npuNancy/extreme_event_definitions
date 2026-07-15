@@ -9,7 +9,7 @@
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import common
+from tools import common
 
 TECH, NAME, LABEL = "wind", "low_resource", "低资源"
 PCT = 5.0   # 改这里

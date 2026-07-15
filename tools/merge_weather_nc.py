@@ -4,10 +4,10 @@
 不必重抽已有数据。
   python extract_station_weather_nc.py --meta origin.csv  ... --out weather_nc/origin.nc
   python extract_station_weather_nc.py --meta foreign.csv ... --out weather_nc/foreign.nc
-  python merge_weather_nc.py --inputs weather_nc/origin.nc weather_nc/foreign.nc --out weather_nc/all.nc
+  python tools/merge_weather_nc.py --inputs weather_nc/origin.nc weather_nc/foreign.nc --out weather_nc/all.nc
   # 以后新增一批:
   python extract_station_weather_nc.py --meta new.csv ... --out weather_nc/new.nc
-  python merge_weather_nc.py --inputs weather_nc/all.nc weather_nc/new.nc --out weather_nc/all.nc
+  python tools/merge_weather_nc.py --inputs weather_nc/all.nc weather_nc/new.nc --out weather_nc/all.nc
 
 规则:
   - 沿 **station** 维拼接;station_id **去重**(默认保留先出现的,--prefer last 改为后者)

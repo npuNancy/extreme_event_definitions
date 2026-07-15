@@ -6,12 +6,12 @@
 已验证: 这些资源与 extract_station_weather_nc 产出的 weather nc **完全一致**(wind 2024 corr=1.0)。
 
 资源: 风=10m风速(u10,v10); 光=辐照 rsds(extracted/ssrd, 已去累积 W/m2)。
-口径同 common.py: roll24c -> clim288(月×时) -> 距平 P5。
+口径同 tools/common.py: roll24c -> clim288(月×时) -> 距平 P5。
 
 用法:
   python compute_lowres_baseline.py --meta meta.csv --tech wind  --out lowres_baseline_wind.npz
   python compute_lowres_baseline.py --meta meta.csv --tech solar --out lowres_baseline_solar.npz
-依赖: 与 common.py 同目录。
+依赖: tools/common.py。
 """
 from __future__ import annotations
 import argparse
@@ -23,7 +23,7 @@ import pandas as pd
 import xarray as xr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import common
+from tools import common
 
 ES = "/data1/luobaozhen/extreme_signals"
 ROOTS = [f"{ES}/output_china_trainset/extracted", f"{ES}/output_addtion_global/extracted"]

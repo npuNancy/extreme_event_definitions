@@ -24,14 +24,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import common  # noqa: E402
+from tools import common  # noqa: E402
 from grid_extreme_signals import cf_low_resource  # noqa: E402
 
 logger = logging.getLogger("patch_pipelineB_low_resource")
 
 
 DEFAULT_OUTPUT_ROOT = (
-    "../outputs/station_signals_pipelineB/regional_bcsd/NESM3"
+    "outputs/station_signals/regional_bcsd/NESM3"
 )
 DEFAULT_CF_ROOT = "data/cfs"
 DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025"
@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="只补写已有 Pipeline B 文件中的 signal_low_resource。",
     )
     p.add_argument("--output_root", default=DEFAULT_OUTPUT_ROOT,
-                   help="已有 Pipeline B NESM3 结果根目录。")
+                   help="已有 Pipeline B 结果根目录，指向 source/model 层。")
     p.add_argument("--cf_root", default=DEFAULT_CF_ROOT,
                    help="CF 数据根目录，默认 data/cfs。")
     p.add_argument("--threshold_dir", default=DEFAULT_THRESHOLD_DIR,
@@ -419,6 +419,12 @@ def _process_file(path: Path, args) -> bool:
         activation_years = out["activation_year"][:].astype(np.int64)
         match_dist = out["match_dist_deg"][:].astype(np.float64)
         max_dist = float(_decode_attr(out.attrs.get("max_match_dist_deg", b"0.15")))
+        spatial_interp = _decode_attr(out.attrs.get("match_method", b"nearest")).lower()
+        if spatial_interp not in {"nearest", "bilinear"}:
+            raise ValueError(
+                f"{path}: match_method={spatial_interp!r} 不支持；"
+                "当前只支持 nearest 或 bilinear"
+            )
         n_time = out["time"].shape[0]
         n_station = out["station"].shape[0]
 
@@ -438,6 +444,7 @@ def _process_file(path: Path, args) -> bool:
             station_lons,
             threshold_file=threshold_file,
             max_dist=max_dist,
+            spatial_interp=spatial_interp,
             station_chunk=args.station_chunk,
             time_chunk=args.time_chunk,
         )
