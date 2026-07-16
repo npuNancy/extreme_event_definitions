@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 import argparse
+import logging
 import os
 import sys
 import numpy as np
@@ -29,8 +30,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import registry
 from events import wind_low_resource, solar_low_resource
 from tools import common
+from tools.logging_utils import setup_logging
 
 RESOURCE_KEY = {"wind": "wind_ms", "solar": "rsds"}   # 低资源资源变量(nc 中的名字)
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -43,6 +46,7 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--baseline_npz", default="", help="低资源基线(clim_tbl/thr/station_id); 缺则跳过低资源")
     a = ap.parse_args()
+    setup_logging("generate_extreme_signals")
 
     meta = pd.read_csv(a.meta); meta.columns = [str(c).lstrip("﻿") for c in meta.columns]
     idc = next(c for c in ("station_id", "ID", "id") if c in meta.columns)
@@ -50,8 +54,9 @@ def main():
     sub = (meta[meta["type"].astype(str)==a.tech] if a.region=="all" else meta[(meta["type"].astype(str)==a.tech) & (is_cn if a.region=="china" else ~is_cn)])
     ids = sub[idc].astype(str).to_numpy()
     if len(ids) == 0:
-        print(f"[skip] no {a.tech}/{a.region} stations"); return
-    print(f"[{a.tech}/{a.region}] {len(ids)} stations", flush=True)
+        logger.info("[跳过] %s/%s 无场站", a.tech, a.region)
+        return
+    logger.info("[%s/%s] %d 个场站", a.tech, a.region, len(ids))
 
     ds = xr.open_dataset(a.weather_nc).reindex(station=ids)   # 按该集合选站
     time = pd.DatetimeIndex(pd.to_datetime(ds["time"].values))
@@ -69,7 +74,7 @@ def main():
         bsid = np.array([str(s) for s in bl["station_id"]])
         pos = pd.Index(bsid).get_indexer(ids)          # 对齐基线到当前站序
         if (pos < 0).any():
-            print(f"[warn] {int((pos<0).sum())} 站无基线, 低资源该站置 False")
+            logger.warning("%d 站无基线，低资源该站置 False", int((pos < 0).sum()))
         clim = bl["clim_tbl"]; thr = bl["thr"]
         clim_a = np.where(pos[None, None, :] >= 0, clim[:, :, np.clip(pos, 0, clim.shape[2]-1)], np.nan)
         thr_a = np.where(pos >= 0, thr[np.clip(pos, 0, len(thr)-1)], np.nan)
@@ -79,14 +84,14 @@ def main():
         else:
             lr = wind_low_resource.signal(res, time, clim_tbl=clim_a, thr=thr_a)
         masks["low_resource"] = lr
-        print(f"  low_resource frac {float(lr.mean()):.4f}")
+        logger.info("low_resource 事件比例 %.4f", float(lr.mean()))
     elif a.self_baseline:
         res = ds[RESOURCE_KEY[a.tech]].values.astype(np.float32)
         lr = solar_low_resource.signal(res, time, lat, lon) if a.tech=="solar" else wind_low_resource.signal(res, time)
         masks["low_resource"] = lr
-        print(f"  low_resource(self-baseline) frac {float(lr.mean()):.4f}")
+        logger.info("low_resource（自基线）事件比例 %.4f", float(lr.mean()))
     else:
-        print("[warn] 无 baseline_npz -> 跳过 low_resource")
+        logger.warning("无 baseline_npz，跳过 low_resource")
 
     # 3) 写 nc(每事件一个 int8 bool 变量)
     os.makedirs(a.out_dir, exist_ok=True)
@@ -103,7 +108,7 @@ def main():
     fp = os.path.join(a.out_dir, f"extreme_signals_{a.tech}_{a.region}.nc")
     out.to_netcdf(fp, encoding=enc)
     ds.close()
-    print(f"[ok] wrote {fp}  events={list(masks.keys())}", flush=True)
+    logger.info("已写出 %s  事件=%s", fp, list(masks.keys()))
 
 
 if __name__ == "__main__":

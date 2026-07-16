@@ -43,7 +43,7 @@ class TestGetVarName:
 
     def test_ambiguous_raises(self):
         ds = _make_ds(a=[1.0], b=[2.0])
-        with pytest.raises(KeyError, match="Cannot resolve"):
+        with pytest.raises(KeyError, match="无法在数据集中解析变量"):
             get_var_name(ds, "tas")
 
     def test_no_bcsd_suffix(self):
@@ -88,7 +88,7 @@ class TestValidateSameSpatialGrid:
     def test_mismatching_grids_raises(self):
         ds_ref = xr.Dataset(coords={"lat": np.linspace(40, 50, 5), "lon": np.linspace(0, 10, 10)})
         ds_other = xr.Dataset(coords={"lat": np.linspace(40, 50, 6), "lon": np.linspace(0, 10, 10)})
-        with pytest.raises(ValueError, match="does not match"):
+        with pytest.raises(ValueError, match="网格与参考网格不一致"):
             validate_same_spatial_grid(ds_ref, {"other": ds_other}, "lat", "lon")
 
 

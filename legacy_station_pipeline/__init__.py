@@ -1,10 +1,9 @@
-"""Legacy station-based extreme weather signal pipeline.
+"""旧版场站级极端天气信号流程。
 
-This package contains the original scripts for processing ERA5-Land station
-data.  They have been migrated from the project root and are preserved for
-backward compatibility.
+该包包含处理 ERA5-Land 场站数据的原始脚本。它们已从项目根目录迁移到这里，
+仅为兼容旧调用方式而保留。
 
-Recommended invocation::
+推荐调用方式::
 
     python -m legacy_station_pipeline.generate_extreme_signals ...
     python -m legacy_station_pipeline.extract_station_weather_nc ...

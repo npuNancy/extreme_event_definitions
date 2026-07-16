@@ -17,9 +17,20 @@
 from __future__ import annotations
 import argparse
 import functools
+import logging
+import os
+import sys
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def merge(paths, out, prefer="first"):
@@ -29,13 +40,14 @@ def merge(paths, out, prefer="first"):
     common = sorted(functools.reduce(lambda a, b: a & b, varsets))
     dropped = sorted(functools.reduce(lambda a, b: a | b, varsets) - set(common))
     if dropped:
-        print(f"[warn] 变量不一致, 仅保留交集; 丢弃: {dropped}")
+        logger.warning("变量不一致，仅保留交集；丢弃变量：%s", dropped)
     # 时间并集
     union_time = functools.reduce(
         lambda a, b: a.union(b),
         [pd.DatetimeIndex(pd.to_datetime(d["time"].values)) for d in dss],
     ).sort_values()
-    print(f"[merge] union time: {union_time[0]} -> {union_time[-1]} ({len(union_time)} steps)")
+    logger.info("合并时间轴：%s -> %s（%d 个时间步）",
+                union_time[0], union_time[-1], len(union_time))
 
     order = list(dss) if prefer == "first" else list(reversed(dss))
     parts, seen = [], set()
@@ -52,7 +64,7 @@ def merge(paths, out, prefer="first"):
     enc = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in common}
     merged.to_netcdf(out, encoding=enc)
     nstat = merged.sizes["station"]; ntime = merged.sizes["time"]
-    print(f"[ok] wrote {out}  time={ntime} station={nstat} vars={common}")
+    logger.info("已写出 %s  时间步=%d 场站=%d 变量=%s", out, ntime, nstat, common)
     for d in dss:
         d.close()
     merged.close()
@@ -65,6 +77,7 @@ def main():
     ap.add_argument("--prefer", default="first", choices=["first", "last"],
                     help="station_id 重复时保留哪个 nc 的值")
     a = ap.parse_args()
+    setup_logging("merge_weather_nc")
     merge(a.inputs, a.out, a.prefer)
 
 

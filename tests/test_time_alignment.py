@@ -28,7 +28,7 @@ class TestFindCoordName:
 
     def test_missing_raises(self):
         ds = xr.Dataset(coords={"x": [1, 2]})
-        with pytest.raises(KeyError, match="No coordinate found"):
+        with pytest.raises(KeyError, match="未在候选项"):
             find_coord_name(ds, ["time", "valid_time"])
 
 
@@ -130,7 +130,7 @@ class TestBuildTimeIndex:
             np.timedelta64(3, "h"),
         ).astype("datetime64[ns]")
         da = xr.DataArray(times, dims=("time",), coords={"time": times})
-        with pytest.raises(ValueError, match="No time steps"):
+        with pytest.raises(ValueError, match="没有时间步"):
             build_time_index(da, "2099")
 
 

@@ -58,7 +58,7 @@ WEATHER_KEYS = ["temp_C", "wind_ms", "precip_mmh", "irradiance_wm2", "rh_pct", "
 
 
 def era5_file(prefix, year, month):
-    """Return the ERA5-Land monthly file path for a variable prefix."""
+    """返回某变量前缀对应的 ERA5-Land 月文件路径。"""
     root = ERA5_PREFIX_ROOTS.get(prefix, f"{ERA5_ROOT}/{prefix}")
     return f"{root}/{prefix}_{year}_{month:02d}.nc"
 

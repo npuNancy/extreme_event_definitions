@@ -49,7 +49,7 @@ def find_bcsd_file(
                 logger.warning("%s 匹配到 %d 个文件，使用第一个：%s", var, len(files), files[0])
             return Path(files[0])
     raise FileNotFoundError(
-        f"Cannot find {var} file. Tried:\n  " + "\n  ".join(patterns)
+        f"未找到 {var} 文件。已尝试：\n  " + "\n  ".join(patterns)
     )
 
 
@@ -83,7 +83,7 @@ def find_china_bcsd_file(
                 logger.warning("%s 匹配到 %d 个文件，使用第一个：%s", var, len(files), files[0])
             return Path(files[0])
     raise FileNotFoundError(
-        f"Cannot find {var} file for China CMFD. Tried:\n  " + "\n  ".join(patterns)
+        f"未找到中国 CMFD 的 {var} 文件。已尝试：\n  " + "\n  ".join(patterns)
     )
 
 
@@ -146,8 +146,7 @@ def get_var_name(ds: xr.Dataset, preferred: str, *, use_bcsd_suffix: bool = True
     if len(ds.data_vars) == 1:
         return list(ds.data_vars)[0]
     raise KeyError(
-        f"Cannot resolve variable '{preferred}' in dataset.  "
-        f"Available: {list(ds.data_vars)}"
+        f"无法在数据集中解析变量 '{preferred}'。可用变量：{list(ds.data_vars)}"
     )
 
 
@@ -174,9 +173,9 @@ def validate_same_spatial_grid(
     for name, ds in others.items():
         for cname, ref in [(lat_name, ref_lat), (lon_name, ref_lon)]:
             if cname not in ds.coords and cname not in ds.dims:
-                raise KeyError(f"{name}: missing coordinate '{cname}'")
+                raise KeyError(f"{name}: 缺少坐标 '{cname}'")
             if not _coord_values_close(ref, ds[cname].values, f"{name}.{cname}"):
-                raise ValueError(f"{name}: {cname} grid does not match reference")
+                raise ValueError(f"{name}: {cname} 网格与参考网格不一致")
 
 
 # =====================================================================
@@ -200,7 +199,7 @@ def prepare_dataarray(
                 da = da.isel({dim: 0}, drop=True)
             else:
                 raise ValueError(
-                    f"Variable {var} has non-singleton extra dim {dim}={da.sizes[dim]}"
+                    f"变量 {var} 存在非单长度额外维度 {dim}={da.sizes[dim]}"
                 )
     return da.transpose(time_name, *spatial_names)
 
@@ -340,7 +339,7 @@ def write_signal_dataset(
             attrs={
                 "flag_values": "0, 1",
                 "flag_meanings": "false true",
-                "long_name": f"Extreme weather signal: {sig_name}",
+                "long_name": f"极端天气信号：{sig_name}",
             },
         )
         data_vars[f"signal_{sig_name}"] = da
@@ -363,7 +362,7 @@ def write_signal_dataset(
     if "time_alignment" in bundle.attrs_extra:
         ds.attrs["time_alignment"] = bundle.attrs_extra["time_alignment"]
     else:
-        ds.attrs["time_alignment"] = "source_native"
+        ds.attrs["time_alignment"] = "数据源原生时间轴"
 
     # 数据源标识
     for key in ("model", "region", "scenario", "year", "month"):
@@ -377,8 +376,8 @@ def write_signal_dataset(
 
     ds.attrs["threshold_source"] = "extreme_event_definitions/events"
     ds.attrs["warning"] = (
-        "event thresholds were calibrated on specific historical data; "
-        "compare exposure rates across temporal resolutions with caution"
+        "事件阈值基于特定历史数据校准；"
+        "跨时间分辨率比较暴露率时需谨慎"
     )
 
     # 编码：信号变量使用带 zlib 的 int8，坐标使用 float32

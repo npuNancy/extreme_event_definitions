@@ -147,7 +147,7 @@ def _get_era5land_var_name(ds: xr.Dataset, var: str) -> str:
         return var
     if len(ds.data_vars) == 1:
         return list(ds.data_vars)[0]
-    raise KeyError(f"Cannot find {var} in ERA5-Land file. Available: {list(ds.data_vars)}")
+    raise KeyError(f"ERA5-Land 文件中未找到 {var}。可用变量：{list(ds.data_vars)}")
 
 
 # =====================================================================
@@ -356,7 +356,7 @@ class Era5LandRawAdapter(WeatherAdapter):
             dataset=ds,
             spatial_dims=(lat_name, lon_name),
             grid_kind="regular_latlon",
-            target_time_axis="ERA5-Land native hourly",
+            target_time_axis="ERA5-Land 原生逐小时",
             source_timestep_hours=1.0,
             source_files=source_files,
             skipped_inputs=skipped_inputs,
@@ -365,7 +365,7 @@ class Era5LandRawAdapter(WeatherAdapter):
                 "region": "global",
                 "year": str(year),
                 "month": f"{month:02d}",
-                "time_alignment": "ERA5-Land native hourly",
+                "time_alignment": "ERA5-Land 原生逐小时",
             },
         )
 

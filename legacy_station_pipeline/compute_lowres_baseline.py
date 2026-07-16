@@ -15,22 +15,25 @@
 """
 from __future__ import annotations
 import argparse
+import logging
 import os
 import sys
-import time
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import common
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 ES = "/data1/luobaozhen/extreme_signals"
 ROOTS = [f"{ES}/output_china_trainset/extracted", f"{ES}/output_addtion_global/extracted"]
 
 
-def _log(*a):
-    print(f"[{time.strftime('%H:%M:%S')}]", *a, flush=True)
+def _log(message, *args):
+    logger.info(message, *args)
 
 
 def fill_resource(root, tech, years, want, canon, res, colmap):
@@ -90,7 +93,7 @@ def fill_raw(tech, miss, sub, idc, years, canon, res, colmap):
              else np.where(arrs["ssrd"] > 1361.0, 0.0, arrs["ssrd"])).astype(np.float32)
         cols = np.array([colmap[sids[i]] for i in gi], dtype=int)
         res[:, cols] = r
-        _log(f"  [fallback] {gname}: {len(gi)} 站补抽完成")
+        _log("  [兜底] %s：%d 站补抽完成", gname, len(gi))
 
 
 def main():
@@ -104,13 +107,14 @@ def main():
     ap.add_argument("--fallback_raw", type=int, default=1,
                     help="1: extracted 缺的站从原始全球文件补抽(默认开)")
     a = ap.parse_args()
+    setup_logging("compute_lowres_baseline")
     years = list(range(a.start_year, a.end_year + 1))
 
     meta = pd.read_csv(a.meta); meta.columns = [str(c).lstrip("﻿") for c in meta.columns]
     idc = next(c for c in ("station_id", "ID", "id") if c in meta.columns)
     sub = meta[meta["type"].astype(str) == a.tech]
     want = set(sub[idc].astype(str))
-    _log(f"{a.tech}: 目标 {len(want)} 站, 基线 {years[0]}-{years[-1]}")
+    _log("%s：目标 %d 站，基线 %d-%d", a.tech, len(want), years[0], years[-1])
 
     sids = np.array(sorted(want))                       # 统一站序(全部目标站)
     colmap = {s: i for i, s in enumerate(sids)}
@@ -120,21 +124,22 @@ def main():
     for root in ROOTS:
         hit = fill_resource(root, a.tech, years, want, canon, res, colmap)
         if hit:
-            _log(f"  {os.path.basename(os.path.dirname(root))}: 命中 {len(hit)} 站")
+            _log("  %s：命中 %d 站", os.path.basename(os.path.dirname(root)), len(hit))
             found |= hit
     miss = want - found
     if miss and a.fallback_raw:
-        _log(f"[fallback] {len(miss)} 站不在 extracted, 从原始全球 ERA5-Land 补抽基线 ...")
+        _log("[兜底] %d 站不在 extracted，从原始全球 ERA5-Land 补抽基线 ...", len(miss))
         fill_raw(a.tech, miss, sub, idc, years, canon, res, colmap)
         found = want  # 兜底后视为已覆盖(仍可能个别 NaN)
     miss = want - found
     if miss:
-        _log(f"[warn] {len(miss)} 站仍缺基线(低资源该站全 NaN/无事件): 例 {list(miss)[:5]}")
+        _log("[警告] %d 站仍缺基线（低资源该站全 NaN/无事件）：示例 %s", len(miss), list(miss)[:5])
     if res.shape[1] == 0 or np.isfinite(res).sum() == 0:
-        _log("[error] 无任何站资源"); return
+        logger.error("无任何站资源")
+        return
 
     tref = canon
-    _log(f"resource (T,K)={res.shape}; 算 roll24c + clim288 + P{a.pct} ...")
+    _log("资源数组 (T,K)=%s；计算 roll24c + clim288 + P%s ...", res.shape, a.pct)
     roll = common.roll24c(res)
     clim = common.clim288(roll, tref, base_mask=None)
     mo = tref.month.to_numpy() - 1; hr = tref.hour.to_numpy()
@@ -143,8 +148,9 @@ def main():
         thr = np.nanpercentile(np.where(np.isfinite(anom), anom, np.nan), a.pct, axis=0).astype(np.float32)
     np.savez(a.out, station_id=sids, clim_tbl=clim.astype(np.float32), thr=thr,
              pct=a.pct, baseline=f"{a.start_year}-{a.end_year}", tech=a.tech)
-    _log(f"[ok] wrote {a.out}  clim{clim.shape} thr{thr.shape} K={len(sids)} "
-         f"thr[min/med/max]={np.nanmin(thr):.3f}/{np.nanmedian(thr):.3f}/{np.nanmax(thr):.3f}")
+    _log("已写出 %s  clim%s thr%s K=%d 阈值[min/med/max]=%.3f/%.3f/%.3f",
+         a.out, clim.shape, thr.shape, len(sids),
+         np.nanmin(thr), np.nanmedian(thr), np.nanmax(thr))
 
 
 if __name__ == "__main__":

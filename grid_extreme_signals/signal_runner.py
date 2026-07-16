@@ -49,7 +49,7 @@ _EVENT_REQUIRED_VARS: dict[str, list[str]] = {
 
 def _event_required_var(tech: str, event_name: str) -> str:
     """返回事件所需的第一个变量名（用于日志）。"""
-    return _EVENT_REQUIRED_VARS.get(event_name, ["unknown"])[0]
+    return _EVENT_REQUIRED_VARS.get(event_name, ["未知"])[0]
 
 
 # =====================================================================
@@ -69,8 +69,8 @@ def run_signal_pipeline(adapter, args) -> None:
     # --- 场站筛选保护（Phase 1）---------------------------------
     if getattr(args, "stations_dir", None) is not None:
         raise NotImplementedError(
-            "Station-filter mode is reserved but not implemented yet. "
-            "Omit --stations_dir to run all-grid mode."
+            "场站筛选模式为预留功能，尚未实现。"
+            "请省略 --stations_dir 以运行全网格模式。"
         )
 
     output_root = getattr(args, "output_root", "outputs/grid_extreme_signals")
@@ -118,15 +118,15 @@ def run_signal_pipeline(adapter, args) -> None:
             skipped_reasons = {}
             for ev in skipped:
                 req_var = _event_required_var(tech, ev)
-                reason = bundle.skipped_inputs.get(req_var, f"missing {req_var}")
+                reason = bundle.skipped_inputs.get(req_var, f"缺少 {req_var}")
                 skipped_reasons[ev] = reason
 
             # --- 检查 --require_events ---
             for req in require_events:
                 if req not in masks:
                     raise RuntimeError(
-                        f"Required event '{req}' could not be computed. "
-                        f"Missing input: {bundle.skipped_inputs}"
+                        f"必需事件 '{req}' 无法计算。"
+                        f"缺失输入：{bundle.skipped_inputs}"
                     )
 
             # --- 构建输出属性 ---

@@ -49,6 +49,7 @@ import registry  # noqa: E402
 from grid_extreme_signals.adapters.regional_bcsd import RegionalBcsdAdapter  # noqa: E402
 from grid_extreme_signals import station_match as sm  # noqa: E402
 from grid_extreme_signals import cf_low_resource  # noqa: E402
+from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("station_signals_direct")
 
@@ -342,7 +343,7 @@ def _first_req_var(tech: str, event_name: str) -> str:
         "hot_humid": "rh_pct", "freezing_rain": "precip_mmh", "rainstorm": "precip_mmh",
         "cold_highwind": "temp_C", "high_humidity": "rh_pct", "dust": "dust_aod",
     }
-    return mapping.get(event_name, "unknown")
+    return mapping.get(event_name, "未知")
 
 
 # =====================================================================
@@ -350,10 +351,8 @@ def _first_req_var(tech: str, event_name: str) -> str:
 # =====================================================================
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                        datefmt="%H:%M:%S")
     args = build_parser().parse_args()
+    setup_logging("station_signals_direct")
     args.spatial_interp = _validate_spatial_interp(args.source, args.spatial_interp)
 
     if args.source != "regional_bcsd":

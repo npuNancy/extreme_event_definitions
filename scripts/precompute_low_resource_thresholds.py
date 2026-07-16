@@ -21,6 +21,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from grid_extreme_signals import cf_low_resource  # noqa: E402
+from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("precompute_low_resource_thresholds")
 
@@ -294,12 +295,8 @@ def process_tech(args, tech: str) -> Path | None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
     args = build_parser().parse_args()
+    setup_logging("precompute_low_resource_thresholds")
     if args.lat_chunk < 1 or args.lon_chunk < 1:
         raise ValueError("--lat_chunk 和 --lon_chunk 必须为正整数")
     techs = ["wind", "solar"] if args.tech == "both" else [args.tech]

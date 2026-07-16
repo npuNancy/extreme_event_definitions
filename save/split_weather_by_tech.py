@@ -11,10 +11,20 @@
 """
 from __future__ import annotations
 import argparse
+import logging
 import os
+import sys
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -23,6 +33,7 @@ def main():
     ap.add_argument("--meta", required=True)
     ap.add_argument("--out_dir", required=True)
     a = ap.parse_args()
+    setup_logging("split_weather_by_tech")
 
     meta = pd.read_csv(a.meta); meta.columns = [str(c).lstrip("﻿") for c in meta.columns]
     idc = next(c for c in ("station_id", "ID", "id") if c in meta.columns)
@@ -30,7 +41,7 @@ def main():
     ds = xr.open_dataset(a.weather_nc)
     nc_ids = np.array([str(x) for x in ds["station"].values])
     if len(nc_ids) != len(meta):
-        raise SystemExit(f"nc station {len(nc_ids)} != meta rows {len(meta)} (列序须对应)")
+        raise SystemExit(f"nc 场站数 {len(nc_ids)} != meta 行数 {len(meta)}（列序须对应）")
     os.makedirs(a.out_dir, exist_ok=True)
 
     enc_vars = list(ds.data_vars)
@@ -51,7 +62,7 @@ def main():
         enc = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in enc_vars}
         fp = os.path.join(a.out_dir, f"weather_{tech}.nc")
         sub.to_netcdf(fp, encoding=enc)
-        print(f"[ok] {fp}  station={len(sub_ids)} (unique) vars={enc_vars}", flush=True)
+        logger.info("已写出 %s  场站=%d（唯一）变量=%s", fp, len(sub_ids), enc_vars)
     ds.close()
 
 

@@ -165,7 +165,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
         wind_time = sfcwind_da[time_name].values
 
         # 必要时插值 tas
-        time_alignment = "sfcWind instantaneous native"
+        time_alignment = "sfcWind 原生瞬时值"
         if tas_da is not None:
             tas_da = self._filter_year(tas_da, time_name, year)
             tas_time = tas_da[time_name].values
@@ -176,7 +176,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
                     tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "sfcWind native, tas interpolated"
+                time_alignment = "sfcWind 原生时间轴，tas 已插值"
             else:
                 temp_C = tas_to_celsius(
                     tas_da.values, tas_units,
@@ -320,8 +320,8 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             pr_time = pr_da[time_name].values
             if not np.array_equal(pr_time, target_times):
                 raise ValueError(
-                    "pr time axis does not match rsds time axis. "
-                    "Do not silently intersect or interpolate accumulated precipitation."
+                    "pr 时间轴与 rsds 时间轴不一致。"
+                    "不要静默取交集或插值累计降水。"
                 )
             precip_mmh = pr_to_mmh(
                 pr_da.values, pr_units,
@@ -355,7 +355,7 @@ class ChinaCmfdBcsdAdapter(WeatherAdapter):
             interp_desc.append("tas→rsds")
         if need_interp_sw:
             interp_desc.append("sfcWind→rsds")
-        time_alignment = ("rsds half-point, " + ", ".join(interp_desc) + " interpolated") if interp_desc else "rsds native"
+        time_alignment = ("rsds 半点时间轴，" + "、".join(interp_desc) + " 已插值") if interp_desc else "rsds 原生时间轴"
 
         return WeatherBundle(
             source="china_cmfd_bcsd",

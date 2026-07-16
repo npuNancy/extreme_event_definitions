@@ -25,10 +25,10 @@ def test_missing_pr_units_default_to_precipitation_flux(tmp_path):
     )
     ds = xr.open_dataset(pr_path)
     original = ds["pr_bcsd"].values.copy()
-    ds["pr_bcsd"].attrs.pop("units", None)
     ds.load()
-    ds.to_netcdf(pr_path)
+    ds["pr_bcsd"].attrs.pop("units", None)
     ds.close()
+    ds.to_netcdf(pr_path)
 
     args = Namespace(
         data_dir=str(tmp_path / "bcsd_outputs"),

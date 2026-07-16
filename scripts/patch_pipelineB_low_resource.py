@@ -26,6 +26,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from tools import common  # noqa: E402
 from grid_extreme_signals import cf_low_resource  # noqa: E402
+from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("patch_pipelineB_low_resource")
 
@@ -355,7 +356,7 @@ def _ensure_signal_dataset(f: h5py.File, name: str, shape: tuple[int, int],
     d.attrs["_Netcdf4Coordinates"] = np.array([0, 1], dtype=np.int32)
     d.attrs["flag_values"] = np.bytes_("0, 1")
     d.attrs["flag_meanings"] = np.bytes_("false true")
-    d.attrs["long_name"] = np.bytes_("Extreme weather signal: low_resource")
+    d.attrs["long_name"] = "极端天气信号：low_resource"
     return d, True
 
 
@@ -465,12 +466,8 @@ def _process_file(path: Path, args) -> bool:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
     args = build_parser().parse_args()
+    setup_logging("patch_pipelineB_low_resource")
     files = _find_station_files(args)
     logger.info("待处理文件数：%d", len(files))
     for p in files:

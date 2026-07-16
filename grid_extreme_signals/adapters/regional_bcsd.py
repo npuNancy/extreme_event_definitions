@@ -94,7 +94,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
         if self.region == "all":
             return discover_regions(self.data_dir, self.model)
         if not is_valid_region_name(self.region):
-            raise ValueError(f"Invalid region name: {self.region!r}")
+            raise ValueError(f"无效区域名：{self.region!r}")
         return [self.region]
 
     # ------------------------------------------------------------------
@@ -203,16 +203,16 @@ class RegionalBcsdAdapter(WeatherAdapter):
                     tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "tas interpolated to uas/vas time"
+                time_alignment = "tas 已插值到 uas/vas 时间轴"
             else:
                 temp_C = tas_to_celsius(
                     tas_da.values, tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "uas/vas instantaneous native"
+                time_alignment = "uas/vas 原生瞬时值"
         else:
             temp_C = None
-            time_alignment = "uas/vas instantaneous native"
+            time_alignment = "uas/vas 原生瞬时值"
 
         # 由分量计算风速
         wind_ms = np.sqrt(
@@ -349,9 +349,9 @@ class RegionalBcsdAdapter(WeatherAdapter):
             pr_time = pr_da[time_name].values
             if not np.array_equal(pr_time, target_times):
                 raise ValueError(
-                    "pr time axis does not match rsds time axis. "
-                    "Do not silently intersect or interpolate accumulated precipitation. "
-                    "Check your input data or provide matching time axes."
+                    "pr 时间轴与 rsds 时间轴不一致。"
+                    "不要静默取交集或插值累计降水。"
+                    "请检查输入数据，或提供时间轴一致的数据。"
                 )
             precip_mmh = pr_to_mmh(
                 pr_da.values, _regional_bcsd_pr_units(pr_units),
@@ -386,7 +386,7 @@ class RegionalBcsdAdapter(WeatherAdapter):
             interp_desc.append("tas→rsds")
         if need_interp_wind:
             interp_desc.append("uas/vas→rsds")
-        time_alignment = ("rsds half-point, " + ", ".join(interp_desc) + " interpolated") if interp_desc else "rsds native"
+        time_alignment = ("rsds 半点时间轴，" + "、".join(interp_desc) + " 已插值") if interp_desc else "rsds 原生时间轴"
 
         return WeatherBundle(
             source="regional_bcsd",

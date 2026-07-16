@@ -1,25 +1,24 @@
-"""Generate non-low-resource extreme-weather signals for global wind/solar sites.
+"""生成全球风电/光伏场站的非低资源极端天气信号。
 
-This script is designed for Spark02:
+本脚本面向 Spark02：
   /data1/luobaozhen/extreme_event_definitions/input/{wind,solar}_all_2024q2_final.gpkg
 
-It keeps the previous inference-output layout style:
+输出保持旧推理结果的目录风格：
   OUT_ROOT/{Country}/{Year}/station_metadata_{tech}[...].csv
   OUT_ROOT/{Country}/{Year}/era5land_extreme_station_{Country}_{Year}_{tech}[...].nc
 
-Only simple threshold events are produced. low_resource is intentionally skipped
-because it is handled by the existing low-resource pipeline.
+这里只生成简单阈值事件。low_resource 会由既有低资源流程处理，因此本脚本刻意跳过。
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import math
 import os
 import re
 import sqlite3
 import sys
-import time as _time
 from dataclasses import dataclass
 
 import numpy as np
@@ -30,6 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import registry
 import legacy_station_pipeline.weather_loaders as wl
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 ERA5_ROOTS = {
@@ -37,26 +39,26 @@ ERA5_ROOTS = {
     "v10": "/data1/luobaozhen/era5_download/ERA5_land/global/v10",
     "t2m": "/data1/luobaozhen/era5_download/ERA5_land/global/t2m",
     "tp": "/data1/luobaozhen/era5_download/ERA5_land/global/tp",
-    # Dew point files and internal variable are both named d2m.
+    # 露点文件和 NetCDF 内部变量都命名为 d2m。
     "d2m": "/data1/luobaozhen/global_wind_pv/era5_download/ERA5_land/global/d2m",
 }
 
 REQUIRED = {
     "wind": ["u10", "v10", "t2m", "tp", "d2m"],
-    "solar": ["u10", "v10", "t2m", "tp", "d2m"],  # dust is loaded from MERRA-2 separately.
+    "solar": ["u10", "v10", "t2m", "tp", "d2m"],  # 沙尘单独从 MERRA-2 读取。
 }
 
 WEATHER_ATTRS = {
-    "tas": ("K", "2m air temperature"),
-    "sfcWind": ("m s-1", "10m wind speed"),
-    "pr": ("mm h-1", "hourly precipitation"),
-    "hurs": ("%", "2m relative humidity from t2m and d2m"),
-    "dod": ("1", "MERRA-2 DUEXTTAU dust optical depth"),
+    "tas": ("K", "2m 气温"),
+    "sfcWind": ("m s-1", "10m 风速"),
+    "pr": ("mm h-1", "逐小时降水"),
+    "hurs": ("%", "由 t2m 和 d2m 计算的 2m 相对湿度"),
+    "dod": ("1", "MERRA-2 DUEXTTAU 沙尘光学厚度"),
 }
 
 
-def log(*args):
-    print(f"[{_time.strftime('%H:%M:%S')}]", *args, flush=True)
+def log(message, *args):
+    logger.info(message, *args)
 
 
 def safe_country(name: str) -> str:
@@ -74,7 +76,7 @@ def gpkg_layer(path: str) -> str:
             "select table_name from gpkg_contents where data_type='features' limit 1"
         ).fetchone()
     if not row:
-        raise RuntimeError(f"No feature layer found in {path}")
+        raise RuntimeError(f"{path} 中未找到要素图层")
     return str(row[0])
 
 
@@ -135,8 +137,8 @@ def check_era5(years: list[int], variables: list[str]):
                     missing.append(fp)
     if missing:
         msg = "\n".join(missing[:20])
-        extra = "" if len(missing) <= 20 else f"\n... {len(missing) - 20} more"
-        raise FileNotFoundError(f"Missing ERA5 files:\n{msg}{extra}")
+        extra = "" if len(missing) <= 20 else f"\n... 还有 {len(missing) - 20} 个文件"
+        raise FileNotFoundError(f"缺少 ERA5 文件：\n{msg}{extra}")
 
 
 def deaccum_tp(tp: np.ndarray, time_index: pd.DatetimeIndex) -> np.ndarray:
@@ -247,7 +249,7 @@ def build_weather(
     if tech == "solar":
         weather["dod"] = wl.sample_dust(year, lat, lon, canon).astype(np.float32)
     if snap_ref is None:
-        raise RuntimeError("No t2m grid snap was created")
+        raise RuntimeError("未生成 t2m 网格匹配信息")
     return weather, canon, snap_ref
 
 
@@ -298,13 +300,13 @@ def write_dataset(
             "country": ("station", stations["country"].astype(str).to_numpy()),
         },
         attrs={
-            "title": f"ERA5-Land non-low-resource extreme signals ({country}, {year}, {tech})",
-            "source": "ERA5-Land + MERRA-2 DUEXTTAU; thresholds from extreme_event_definitions/events",
+            "title": f"ERA5-Land 非低资源极端信号（{country}, {year}, {tech}）",
+            "source": "ERA5-Land + MERRA-2 DUEXTTAU；阈值来自 extreme_event_definitions/events",
             "tech": tech,
             "country": country,
             "year": str(year),
             "events": ",".join(masks.keys()),
-            "low_resource": "not included",
+            "low_resource": "未包含",
             "time": "UTC",
             "interp": "nearest",
         },
@@ -314,7 +316,7 @@ def write_dataset(
             ds[v].attrs["units"] = units
             ds[v].attrs["long_name"] = long_name
     for name in masks:
-        ds[f"signal_{name}"].attrs["long_name"] = f"{tech} {name} extreme-weather signal"
+        ds[f"signal_{name}"].attrs["long_name"] = f"{tech} {name} 极端天气信号"
         ds[f"signal_{name}"].attrs["flag_values"] = "0, 1"
         ds[f"signal_{name}"].attrs["flag_meanings"] = "false true"
 
@@ -330,7 +332,7 @@ def write_dataset(
 
 
 def output_complete(nc_path: str, meta_path: str) -> bool:
-    """Return True when an existing output pair is readable and minimally complete."""
+    """已有输出 pair 可读取且满足最小完整性时返回 True。"""
     if not (os.path.exists(nc_path) and os.path.exists(meta_path)):
         return False
     try:
@@ -362,13 +364,13 @@ def run(args):
     check_era5(years, REQUIRED[args.tech])
     sites = load_sites(args.gpkg, countries=countries, limit_per_country=args.limit_per_country)
     if sites.empty:
-        raise SystemExit("No stations matched.")
-    log(f"loaded {len(sites)} {args.tech} stations from {args.gpkg}")
-    log("countries:", sites["country"].nunique())
+        raise SystemExit("未匹配到场站。")
+    log("从 %s 读取 %d 个 %s 场站", args.gpkg, len(sites), args.tech)
+    log("国家数：%d", sites["country"].nunique())
 
     groups = [(country, sub.reset_index(drop=True)) for country, sub in sites.groupby("country", sort=True)]
     for year in years:
-        log(f"=== year {year} ===")
+        log("=== 年份 %d ===", year)
         for country, sub0 in groups:
             country_dir = safe_country(country)
             out_dir = os.path.join(args.out_root, country_dir, str(year))
@@ -382,11 +384,12 @@ def run(args):
                 )
                 meta = os.path.join(out_dir, f"station_metadata_{args.tech}{suffix}.csv")
                 if not args.overwrite and output_complete(nc, meta):
-                    log(f"[skip] {country_dir}/{year}/{args.tech}{suffix}")
+                    log("[跳过] %s/%d/%s%s", country_dir, year, args.tech, suffix)
                     continue
                 if not args.overwrite and (os.path.exists(nc) or os.path.exists(meta)):
-                    log(f"[redo] incomplete existing output: {country_dir}/{year}/{args.tech}{suffix}")
-                log(f"[run] {country_dir}/{year}/{args.tech}{suffix}: {len(sub)} stations")
+                    log("[重做] 已有输出不完整：%s/%d/%s%s", country_dir, year, args.tech, suffix)
+                log("[运行] %s/%d/%s%s：%d 个场站",
+                    country_dir, year, args.tech, suffix, len(sub))
                 if args.dry_run:
                     continue
                 weather, time, snap = build_weather(args.tech, year, sub)
@@ -402,7 +405,7 @@ def run(args):
                 write_metadata(meta, sub, snap)
                 write_dataset(nc, args.tech, country, year, sub, time, weather, masks)
                 frac = {k: round(float(v.mean()), 6) for k, v in masks.items()}
-                log(f"[ok] wrote {nc}; event_frac={frac}")
+                log("已写出 %s；事件比例=%s", nc, frac)
 
 
 def parse_args():
@@ -414,7 +417,7 @@ def parse_args():
     ap.add_argument("--out_root", default="extreme_simple_global_2017_2024")
     ap.add_argument("--countries", nargs="*", default=None, help="Original country names, e.g. Germany 'United States'")
     ap.add_argument("--chunk_size", type=int, default=10000)
-    ap.add_argument("--limit_per_country", type=int, default=0, help="Debug/test: keep first N stations per country")
+    ap.add_argument("--limit_per_country", type=int, default=0, help="调试/测试：每个国家只保留前 N 个场站")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--dry_run", action="store_true")
     args = ap.parse_args()
@@ -424,4 +427,6 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    run(parse_args())
+    args = parse_args()
+    setup_logging("global_extreme_simple_signals")
+    run(args)

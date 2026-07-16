@@ -143,7 +143,7 @@ class CordexNam12Adapter(WeatherAdapter):
         """打开 CORDEX 变量文件，并返回 (ds, da, var_name, units)。"""
         fpath = self._find_files_for_year(task, var, year)
         if fpath is None:
-            raise FileNotFoundError(f"Cannot find CORDEX file for {var}, year={year}")
+            raise FileNotFoundError(f"未找到 CORDEX 文件：变量={var}, 年份={year}")
 
         ds = xr.open_dataset(str(fpath))
         time_name = find_coord_name(ds, TIME_CANDIDATES)
@@ -169,7 +169,7 @@ class CordexNam12Adapter(WeatherAdapter):
         if fpath is None:
             fpath = self._find_files_for_year(task, "tas", year)
         if fpath is None:
-            raise FileNotFoundError("Cannot find any CORDEX file for coordinate discovery")
+            raise FileNotFoundError("未找到任何可用于坐标发现的 CORDEX 文件")
         ds = xr.open_dataset(str(fpath))
         time_name = find_coord_name(ds, TIME_CANDIDATES)
         rlat_name = find_coord_name(ds, RLAT_CANDIDATES)
@@ -227,7 +227,7 @@ class CordexNam12Adapter(WeatherAdapter):
         wind_time = uas_da[time_name].values
 
         # 必要时插值 tas
-        time_alignment = "uas/vas instantaneous (:00) native"
+        time_alignment = "uas/vas 原生 :00 瞬时值"
         if tas_da is not None:
             tas_da = self._filter_year(tas_da, time_name, year)
             tas_time = tas_da[time_name].values
@@ -238,7 +238,7 @@ class CordexNam12Adapter(WeatherAdapter):
                     tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "uas/vas :00, tas interpolated"
+                time_alignment = "uas/vas :00 时间轴，tas 已插值"
             else:
                 temp_C = tas_to_celsius(tas_da.values, tas_units, allow_inference=self.allow_unit_inference)
         else:
@@ -354,14 +354,14 @@ class CordexNam12Adapter(WeatherAdapter):
             uas_interp = interp_instantaneous_to_target(uas_da, time_name, target_times)
             vas_interp = interp_instantaneous_to_target(vas_da, time_name, target_times)
             wind_ms = np.sqrt(uas_interp ** 2 + vas_interp ** 2)
-            time_alignment = "rsds :30 half-point, tas/uas/vas interpolated"
+            time_alignment = "rsds :30 半点时间轴，tas/uas/vas 已插值"
         else:
             temp_C = tas_to_celsius(tas_da.values, tas_units, allow_inference=self.allow_unit_inference)
             wind_ms = np.sqrt(
                 uas_da.values.astype(np.float32) ** 2
                 + vas_da.values.astype(np.float32) ** 2,
             )
-            time_alignment = "rsds native"
+            time_alignment = "rsds 原生时间轴"
 
         # rsds
         rsds_wm2 = rsds_to_wm2(
@@ -376,8 +376,8 @@ class CordexNam12Adapter(WeatherAdapter):
             pr_time = pr_da[time_name].values
             if not np.array_equal(pr_time, target_times):
                 raise ValueError(
-                    "pr time axis does not match rsds time axis. "
-                    "Do not silently intersect or interpolate accumulated precipitation."
+                    "pr 时间轴与 rsds 时间轴不一致。"
+                    "不要静默取交集或插值累计降水。"
                 )
             precip_mmh = pr_to_mmh(
                 pr_da.values, pr_units,

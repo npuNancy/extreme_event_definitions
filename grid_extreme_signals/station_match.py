@@ -562,7 +562,7 @@ def write_station_signals(
         data_vars[name] = xr.DataArray(
             np.asarray(arr, dtype=np.int8), dims=("time", "station"),
             attrs={"flag_values": "0, 1", "flag_meanings": "false true",
-                   "long_name": f"Extreme weather signal: {ev}"})
+                   "long_name": f"极端天气信号：{ev}"})
     data_vars["station_lon"] = xr.DataArray(sta["lon"].to_numpy(np.float32), dims=("station",))
     data_vars["station_lat"] = xr.DataArray(sta["lat"].to_numpy(np.float32), dims=("station",))
     data_vars["station_type"] = xr.DataArray(

@@ -21,6 +21,7 @@ if _PROJECT_ROOT not in sys.path:
 from grid_extreme_signals import cf_low_resource  # noqa: E402
 from grid_extreme_signals import station_match as sm  # noqa: E402
 from scripts import precompute_low_resource_thresholds as full_precompute  # noqa: E402
+from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("precompute_station_low_resource_thresholds")
 
@@ -281,12 +282,8 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
     args = build_parser().parse_args()
+    setup_logging("precompute_station_low_resource_thresholds")
     if args.station_chunk < 1:
         raise ValueError("--station_chunk 必须为正整数")
     scenario = args.scenario or sm.infer_scenario_from_csv(args.stations_csv)

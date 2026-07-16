@@ -36,8 +36,8 @@ def tas_to_celsius(
     # 单位无法识别
     if not allow_inference:
         raise ValueError(
-            f"Temperature unit not recognised: {units!r}.  "
-            "Pass allow_inference=True to guess by magnitude."
+            f"无法识别温度单位：{units!r}。"
+            "如需按数值大小启发式推断，请传入 allow_inference=True。"
         )
     finite = x[np.isfinite(x)]
     if finite.size and np.nanmedian(finite) > 100:
@@ -69,8 +69,8 @@ def wind_to_ms(
 
     if not allow_inference:
         raise ValueError(
-            f"Wind speed unit not recognised: {units!r}.  "
-            "Pass allow_inference=True to assume m s-1."
+            f"无法识别风速单位：{units!r}。"
+            "如需默认按 m s-1 处理，请传入 allow_inference=True。"
         )
     return x.astype(np.float32)
 
@@ -110,15 +110,14 @@ def pr_to_mmh(
     if units_l in ("mm",):
         if timestep_hours is None:
             raise ValueError(
-                "Precipitation unit is 'mm' (per time step) but "
-                "timestep_hours was not provided."
+                "降水单位为 'mm'（每时间步累计量），但未提供 timestep_hours。"
             )
         return (x / timestep_hours).astype(np.float32)
 
     if not allow_inference:
         raise ValueError(
-            f"Precipitation unit not recognised: {units!r}.  "
-            "Pass allow_inference=True to assume mm h-1."
+            f"无法识别降水单位：{units!r}。"
+            "如需默认按 mm h-1 处理，请传入 allow_inference=True。"
         )
     return x.astype(np.float32)
 
@@ -155,14 +154,14 @@ def rsds_to_wm2(
     if units_l in ("jm-2", "j/m2", "j.m-2"):
         if timestep_seconds is None:
             raise ValueError(
-                "Radiation unit is 'J m-2' but timestep_seconds was not provided."
+                "辐射单位为 'J m-2'，但未提供 timestep_seconds。"
             )
         return (x / timestep_seconds).astype(np.float32)
 
     if not allow_inference:
         raise ValueError(
-            f"Radiation unit not recognised: {units!r}.  "
-            "Pass allow_inference=True to assume W m-2."
+            f"无法识别辐射单位：{units!r}。"
+            "如需默认按 W m-2 处理，请传入 allow_inference=True。"
         )
     return x.astype(np.float32)
 

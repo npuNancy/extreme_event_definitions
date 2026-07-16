@@ -26,6 +26,7 @@
 from __future__ import annotations
 import argparse
 import glob as _g
+import logging
 import os
 import sys
 import time
@@ -35,12 +36,15 @@ import xarray as xr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import legacy_station_pipeline.weather_loaders as wl
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 ACCUM = {"tp", "ssrd"}
 
 
-def _log(*a):
-    print(f"[{time.strftime('%H:%M:%S')}]", *a, flush=True)
+def _log(message, *args):
+    logger.info(message, *args)
 
 
 def gather_var(prefix, years, slat, slon360, bbox):
@@ -65,7 +69,7 @@ def gather_var(prefix, years, slat, slon360, bbox):
             times.append(pd.to_datetime(sub[tn].values))
             d.close()
     if not pieces:
-        raise FileNotFoundError(f"no ERA5-Land {prefix} for {years} under {wl.ERA5_ROOT}")
+        raise FileNotFoundError(f"在 {wl.ERA5_ROOT} 下未找到 {years} 的 ERA5-Land {prefix}")
     return np.concatenate(pieces, 0), pd.DatetimeIndex(np.concatenate([t.values for t in times]))
 
 
@@ -91,7 +95,7 @@ def _extract_one_var(payload):
             arr = wl._deaccum(arr, t)
             arr = arr * (wl.TP_M_TO_MM if key == "tp" else wl.SSRD_J_TO_W)
         out[:, idx] = _align(arr, t, canon)
-    print(f"[{time.strftime('%H:%M:%S')}]   ERA5 {key:5s} done ({time.time()-t0:.0f}s)", flush=True)
+    _log("  ERA5 %-5s 完成（%.0f 秒）", key, time.time() - t0)
     return key, out
 
 
@@ -108,7 +112,7 @@ def extract_era5(lat, lon, years, canon, groups, workers=6):
                     raw[key] = arr
             return raw
         except Exception as e:
-            _log(f"  并行失败({type(e).__name__}), 回退串行: {e}")
+            _log("  并行失败（%s），回退串行：%s", type(e).__name__, e)
     for p in payloads:
         key, arr = _extract_one_var(p); raw[key] = arr
     return raw
@@ -123,7 +127,7 @@ def dust_global(lat, lon, years, canon):
         sub_t = canon[sel]
         arr = wl.sample_dust(y, lat, lon, sub_t)     # (Ty, K), 单年内部已读每日文件一次
         out[np.where(sel)[0]] = arr
-        _log(f"  dust {y} done ({time.time()-t0:.0f}s)")
+        _log("  沙尘 %d 完成（%.0f 秒）", y, time.time() - t0)
     return out
 
 
@@ -141,6 +145,7 @@ def main():
     ap.add_argument("--no_dust", action="store_true")
     ap.add_argument("--group_by_country", type=int, default=1)
     a = ap.parse_args()
+    setup_logging("extract_station_weather_nc")
     years = list(range(a.start_year, a.end_year + 1))
 
     meta = pd.read_csv(a.meta)
@@ -153,14 +158,14 @@ def main():
     name = meta[namec].astype(str).to_numpy() if namec else sid.copy()
     lat = pd.to_numeric(meta[lac], errors="coerce").to_numpy(float)
     lon = wl.to_180(pd.to_numeric(meta[loc], errors="coerce").to_numpy(float))
-    _log(f"meta: {len(meta)} stations, years {years[0]}-{years[-1]}")
+    _log("meta：%d 个场站，年份 %d-%d", len(meta), years[0], years[-1])
 
     if a.group_by_country and "country" in meta.columns:
         groups = {c: np.where(meta["country"].astype(str).to_numpy() == c)[0]
                   for c in meta["country"].astype(str).unique()}
     else:
         groups = {"ALL": np.arange(len(meta))}
-    _log(f"groups: {[(g, len(i)) for g, i in groups.items()]}")
+    _log("分组：%s", [(g, len(i)) for g, i in groups.items()])
 
     canon = pd.date_range(f"{years[0]}-01-01 00:00", f"{years[-1]}-12-31 23:00", freq="h")
     raw = extract_era5(lat, lon, years, canon, groups)
@@ -189,7 +194,7 @@ def main():
     enc = {v: {"zlib": True, "complevel": 4, "dtype": "float32"} for v in vars_out}
     os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
     ds.to_netcdf(a.out, encoding=enc)
-    _log(f"[ok] wrote {a.out}  time={len(canon)} station={len(sid)} vars={vars_out}")
+    _log("已写出 %s  时间步=%d 场站=%d 变量=%s", a.out, len(canon), len(sid), vars_out)
 
 
 if __name__ == "__main__":

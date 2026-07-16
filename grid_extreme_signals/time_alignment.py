@@ -32,8 +32,8 @@ def find_coord_name(ds: xr.Dataset, candidates: Iterable[str]) -> str:
         if c in ds.coords or c in ds.dims:
             return c
     raise KeyError(
-        f"No coordinate found among candidates {list(candidates)}.  "
-        f"Available: coords={list(ds.coords)}, dims={list(ds.dims)}"
+        f"未在候选项 {list(candidates)} 中找到坐标。"
+        f"可用坐标={list(ds.coords)}，维度={list(ds.dims)}"
     )
 
 
@@ -100,11 +100,11 @@ def interp_instantaneous_to_target(
     tgt_num = datetime64_to_ns(target_times)
 
     if src_num.ndim != 1:
-        raise ValueError(f"{da.name or 'variable'} time coordinate is not 1-D.")
+        raise ValueError(f"{da.name or '变量'} 的时间坐标不是一维。")
     if src_num.size < 1:
-        raise ValueError(f"{da.name or 'variable'} time coordinate is empty.")
+        raise ValueError(f"{da.name or '变量'} 的时间坐标为空。")
     if np.any(np.diff(src_num) <= 0):
-        raise ValueError(f"{da.name or 'variable'} time not strictly increasing.")
+        raise ValueError(f"{da.name or '变量'} 的时间坐标不是严格递增。")
 
     nsrc = src_num.size
     right = np.searchsorted(src_num, tgt_num, side="left")
@@ -122,7 +122,7 @@ def interp_instantaneous_to_target(
         left[after] = nsrc - 1
         right[after] = nsrc - 1
     elif fill_boundary != "nan":
-        raise ValueError(f"Unsupported fill_boundary={fill_boundary!r}")
+        raise ValueError(f"不支持的 fill_boundary={fill_boundary!r}")
 
     # 只读取所需切片以节省内存
     i0 = int(min(left.min(), right.min()))
@@ -195,7 +195,7 @@ def build_time_index(
     )
     idx = np.where(mask.values)[0]
     if idx.size == 0:
-        raise ValueError(f"No time steps match years={years_str}, months={months_str or 'all'}")
+        raise ValueError(f"没有时间步匹配 years={years_str}, months={months_str or 'all'}")
 
     selected = time_da.isel({time_da.dims[0]: idx})
     doy = selected.dt.dayofyear.values.astype(np.float32)
@@ -217,5 +217,5 @@ def filter_year(
     mask = time_da.dt.year == year
     idx = np.where(mask.values)[0]
     if idx.size == 0:
-        raise ValueError(f"No time steps for year={year}")
+        raise ValueError(f"年份 {year} 没有时间步")
     return idx

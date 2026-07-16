@@ -60,6 +60,7 @@ from grid_extreme_signals.adapters.china_cmfd_bcsd import ChinaCmfdBcsdAdapter
 from grid_extreme_signals.adapters.cordex_nam12 import CordexNam12Adapter
 from grid_extreme_signals.adapters.era5land_raw import Era5LandRawAdapter
 from grid_extreme_signals.signal_runner import run_signal_pipeline
+from tools.logging_utils import setup_logging
 
 logger = logging.getLogger("grid_extreme_signals")
 
@@ -165,17 +166,17 @@ def validate_args(args: argparse.Namespace) -> None:
     if src == "regional_bcsd":
         for name in ("model", "region", "scenario"):
             if getattr(args, name) is None:
-                raise ValueError(f"--{name} is required for --source regional_bcsd")
+                raise ValueError(f"--source regional_bcsd 必须提供 --{name}")
 
     elif src == "china_cmfd_bcsd":
         for name in ("model", "scenario"):
             if getattr(args, name) is None:
-                raise ValueError(f"--{name} is required for --source china_cmfd_bcsd")
+                raise ValueError(f"--source china_cmfd_bcsd 必须提供 --{name}")
 
     elif src == "cordex_nam12":
         for name in ("gcm_model", "realization", "rcm_model", "scenario"):
             if getattr(args, name) is None:
-                raise ValueError(f"--{name} is required for --source cordex_nam12")
+                raise ValueError(f"--source cordex_nam12 必须提供 --{name}")
 
     # era5land_raw 不需要额外参数
 
@@ -195,14 +196,9 @@ def create_adapter(args: argparse.Namespace):
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     parser = build_parser()
     args = parser.parse_args()
+    setup_logging("generate_multi_source_grid_signals")
 
     # 按数据源设置默认 chunk_time
     if args.chunk_time is None:

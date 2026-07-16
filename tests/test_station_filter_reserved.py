@@ -23,7 +23,7 @@ class TestStationsDirReserved:
     def test_nonempty_raises_not_implemented(self):
         """Any non-None value must raise NotImplementedError."""
         args = Namespace(stations_dir="/data/stations")
-        with pytest.raises(NotImplementedError, match="Station-filter mode is reserved"):
+        with pytest.raises(NotImplementedError, match="场站筛选模式"):
             run_signal_pipeline(_DummyAdapter(), args)
 
     def test_empty_string_raises(self):
@@ -35,5 +35,5 @@ class TestStationsDirReserved:
     def test_error_message_content(self):
         """Error message should mention 'not implemented yet'."""
         args = Namespace(stations_dir="some/path")
-        with pytest.raises(NotImplementedError, match="not implemented yet"):
+        with pytest.raises(NotImplementedError, match="尚未实现"):
             run_signal_pipeline(_DummyAdapter(), args)

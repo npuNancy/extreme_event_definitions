@@ -80,5 +80,5 @@ class TestRequireEvents:
         )
         adapter = ChinaCmfdBcsdAdapter(args)
         from grid_extreme_signals.signal_runner import run_signal_pipeline
-        with pytest.raises(RuntimeError, match="Required event"):
+        with pytest.raises(RuntimeError, match="必需事件"):
             run_signal_pipeline(adapter, args)

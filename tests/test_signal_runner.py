@@ -31,7 +31,7 @@ class TestStationsDirGuard:
             def iter_tasks(self, a):
                 return []
 
-        with pytest.raises(NotImplementedError, match="Station-filter mode"):
+        with pytest.raises(NotImplementedError, match="场站筛选模式"):
             run_signal_pipeline(DummyAdapter(), args)
 
 

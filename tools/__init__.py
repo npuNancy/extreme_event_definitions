@@ -1,1 +1,1 @@
-"""Project utility modules and standalone helper scripts."""
+"""项目工具模块和独立辅助脚本。"""

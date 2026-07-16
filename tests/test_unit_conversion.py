@@ -30,7 +30,7 @@ class TestTasToCelsius:
         np.testing.assert_allclose(result, [0.0, 100.0])
 
     def test_missing_units_raises(self):
-        with pytest.raises(ValueError, match="unit not recognised"):
+        with pytest.raises(ValueError, match="无法识别温度单位"):
             tas_to_celsius(np.array([300.0]), None)
 
     def test_missing_units_inference(self):
@@ -58,7 +58,7 @@ class TestWindToMs:
         np.testing.assert_allclose(result, [10.0], atol=0.01)
 
     def test_missing_units_raises(self):
-        with pytest.raises(ValueError, match="unit not recognised"):
+        with pytest.raises(ValueError, match="无法识别风速单位"):
             wind_to_ms(np.array([10.0]), None)
 
     def test_missing_units_inference(self):

@@ -37,7 +37,12 @@
   低温大风 cold_highwind: temp_C < 5  & wind_ms > 8
 """
 from __future__ import annotations
+import logging
 import numpy as np
+
+from tools.logging_utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # 1) 简单阈值事件 —— 每个返回 (time, station) 的 bool 掩码
@@ -167,9 +172,14 @@ if __name__ == "__main__":
         "precip_mmh": rng.exponential(0.3, (T, K)).astype("f4"),
         "dust_aod": rng.uniform(0, 0.8, (T, K)).astype("f4"),
     }
-    print("风电事件掩码占比:")
+    setup_logging("extreme_event_definitions")
+    logger.info("风电事件掩码占比：")
     for name, m in all_event_signals("wind", weather).items():
-        print(f"  {EVENT_DEFS['wind'][name]['label']:6s} {name:14s} {EVENT_DEFS['wind'][name]['expr']:30s} -> {m.mean()*100:.1f}%")
-    print("光伏事件掩码占比:")
+        logger.info("  %-6s %-14s %-30s -> %.1f%%",
+                    EVENT_DEFS["wind"][name]["label"], name,
+                    EVENT_DEFS["wind"][name]["expr"], m.mean() * 100)
+    logger.info("光伏事件掩码占比：")
     for name, m in all_event_signals("solar", weather).items():
-        print(f"  {EVENT_DEFS['solar'][name]['label']:6s} {name:14s} {EVENT_DEFS['solar'][name]['expr']:30s} -> {m.mean()*100:.1f}%")
+        logger.info("  %-6s %-14s %-30s -> %.1f%%",
+                    EVENT_DEFS["solar"][name]["label"], name,
+                    EVENT_DEFS["solar"][name]["expr"], m.mean() * 100)
