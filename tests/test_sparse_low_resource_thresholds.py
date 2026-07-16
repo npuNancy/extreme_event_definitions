@@ -11,15 +11,25 @@ from grid_extreme_signals import cf_low_resource
 from scripts import precompute_station_low_resource_thresholds as sparse_precompute
 
 
-def _write_cf(path: Path, tech: str, times: pd.DatetimeIndex, values: np.ndarray) -> None:
+def _write_cf(
+    path: Path,
+    tech: str,
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    *,
+    lat: np.ndarray | None = None,
+    lon: np.ndarray | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     var = "solar_cf" if tech == "solar" else "wind_cf"
+    lat_values = np.array([1.0, 0.0], dtype=np.float32) if lat is None else lat.astype(np.float32)
+    lon_values = np.array([10.0, 11.0], dtype=np.float32) if lon is None else lon.astype(np.float32)
     with h5py.File(path, "w") as f:
         seconds = times.to_numpy(dtype="datetime64[s]").astype(np.int64)
         d_time = f.create_dataset("time", data=seconds)
         d_time.attrs["units"] = np.bytes_("seconds since 1970-01-01")
-        f.create_dataset("lat", data=np.array([1.0, 0.0], dtype=np.float32))
-        f.create_dataset("lon", data=np.array([10.0, 11.0], dtype=np.float32))
+        f.create_dataset("lat", data=lat_values)
+        f.create_dataset("lon", data=lon_values)
         f.create_dataset(var, data=values.astype(np.float32))
 
 
@@ -58,16 +68,63 @@ def test_bilinear_four_point_regular_uses_surrounding_grid():
     )
 
 
+def test_nearest_valid_point_regular_replaces_invalid_nearest():
+    valid = np.array(
+        [
+            [True, False],
+            [False, False],
+        ],
+        dtype=bool,
+    )
+    match = cf_low_resource.nearest_valid_point_regular(
+        np.array([1.0, 0.0]),
+        np.array([10.0, 11.0]),
+        valid,
+        np.array([0.1]),
+        np.array([10.2]),
+    )
+
+    assert match.lat_idx.tolist() == [[0, 0, 0, 0]]
+    assert match.lon_idx.tolist() == [[0, 0, 0, 0]]
+    np.testing.assert_allclose(
+        match.weights[0],
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+
+def test_read_valid_cf_mask_excludes_ocean_zero_fill(tmp_path, monkeypatch):
+    cf_root = tmp_path / "data" / "cfs"
+    times = pd.date_range("2015-01-01", periods=24, freq="h")
+    values = np.zeros((24, 2, 2), dtype=np.float32)
+    path = cf_root / "CFs_of_wind_ERA5Land" / "wind_cf_2015_01.nc"
+    lat = np.array([0.0, 40.0], dtype=np.float32)
+    lon = np.array([200.0, 116.0], dtype=np.float32)
+    _write_cf(path, "wind", times, values, lat=lat, lon=lon)
+    monkeypatch.setattr(
+        sparse_precompute,
+        "_regular_land_mask",
+        lambda grid_lat, grid_lon: np.array([[False, False], [False, True]], dtype=bool),
+    )
+
+    valid = sparse_precompute._read_valid_cf_mask(path, "wind", lat, lon)
+
+    assert not valid[0, 0]
+    assert valid[1, 1]
+
+
 def test_precompute_sparse_threshold_file_schema(tmp_path):
     cf_root = tmp_path / "data" / "cfs"
     times = pd.date_range("2015-01-01", periods=48, freq="h")
-    values = np.ones((48, 2, 2), dtype=np.float32)
+    values = np.full((48, 2, 2), np.nan, dtype=np.float32)
+    values[:, 1, 1] = 1.0
+    lat = np.array([40.0, 39.0], dtype=np.float32)
+    lon = np.array([116.0, 117.0], dtype=np.float32)
     _write_cf(cf_root / "CFs_of_wind_ERA5Land" / "wind_cf_2015_01.nc",
-              "wind", times, values)
+              "wind", times, values, lat=lat, lon=lon)
     stations_csv = tmp_path / "stations.csv"
     stations_csv.write_text(
         "year,type,lon,lat,capacity_gw\n"
-        "2030,wind,10.25,0.25,1.5\n",
+        "2030,wind,116.2,39.1,1.5\n",
         encoding="utf-8",
     )
     args = SimpleNamespace(
@@ -75,6 +132,7 @@ def test_precompute_sparse_threshold_file_schema(tmp_path):
         stations_csv=str(stations_csv),
         output_dir=str(tmp_path / "thresholds"),
         baseline_years="2015",
+        threshold_interp="nearest_valid",
         station_chunk=2,
         compress_level=1,
         allow_incomplete=True,
@@ -92,6 +150,51 @@ def test_precompute_sparse_threshold_file_schema(tmp_path):
         assert f["threshold"].shape == (1,)
         assert f["era5_lat_idx"].shape == (1, 4)
         np.testing.assert_allclose(f["weight"][:].sum(axis=1), np.array([1.0]))
+        np.testing.assert_allclose(
+            f["weight"][:],
+            np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        )
+        assert f["era5_lat_idx"][0, 0] == 1
+        assert f["era5_lon_idx"][0, 0] == 1
+        assert cf_low_resource.decode_attr(f.attrs["interpolation_method"]) == "nearest_valid"
+
+
+def test_precompute_sparse_threshold_accepts_bilinear_option(tmp_path):
+    cf_root = tmp_path / "data" / "cfs"
+    times = pd.date_range("2015-01-01", periods=48, freq="h")
+    values = np.ones((48, 2, 2), dtype=np.float32)
+    lat = np.array([40.0, 39.0], dtype=np.float32)
+    lon = np.array([116.0, 117.0], dtype=np.float32)
+    _write_cf(cf_root / "CFs_of_wind_ERA5Land" / "wind_cf_2015_01.nc",
+              "wind", times, values, lat=lat, lon=lon)
+    stations_csv = tmp_path / "stations.csv"
+    stations_csv.write_text(
+        "year,type,lon,lat,capacity_gw\n"
+        "2030,wind,116.25,39.25,1.5\n",
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        cf_root=str(cf_root),
+        stations_csv=str(stations_csv),
+        output_dir=str(tmp_path / "thresholds"),
+        baseline_years="2015",
+        threshold_interp="bilinear",
+        station_chunk=2,
+        compress_level=1,
+        allow_incomplete=True,
+        overwrite=False,
+        dry_run=False,
+    )
+
+    out_path = sparse_precompute.process_tech(args, "ssp126", "wind")
+
+    assert out_path is not None
+    with h5py.File(out_path, "r") as f:
+        assert cf_low_resource.decode_attr(f.attrs["interpolation_method"]) == "bilinear_4point"
+        np.testing.assert_allclose(
+            f["weight"][0],
+            np.array([0.5625, 0.1875, 0.1875, 0.0625], dtype=np.float32),
+        )
 
 
 def test_station_low_resource_uses_sparse_threshold(tmp_path):

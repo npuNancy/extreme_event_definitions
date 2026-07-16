@@ -39,6 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--baseline_years", default="2015-2025")
     p.add_argument("--tech", choices=["wind", "solar", "both"], default="both")
+    p.add_argument(
+        "--threshold_interp",
+        choices=["nearest_valid", "bilinear"],
+        default="nearest_valid",
+        help="ERA5Land CF 抽取到场站的方式：nearest_valid=最近有效格点（默认），bilinear=四点双线性。",
+    )
     p.add_argument("--station_chunk", type=int, default=128)
     p.add_argument("--compress_level", type=int, default=4)
     p.add_argument("--allow_incomplete", action="store_true")
@@ -65,6 +71,58 @@ def _prepare_stations(stations_csv: str | Path, tech: str) -> pd.DataFrame:
     )
 
 
+def _regular_land_mask(lat: np.ndarray, lon: np.ndarray, chunk_rows: int = 128) -> np.ndarray | None:
+    """用可选陆地掩膜识别 ERA5Land 陆地点；缺少依赖时返回 None。"""
+    try:
+        from global_land_mask import globe
+    except ImportError:
+        return None
+
+    lat = np.asarray(lat, dtype=np.float64)
+    lon_180 = sm.lon_to_180(lon)
+    mask = np.zeros((lat.size, lon_180.size), dtype=bool)
+    lon_row = lon_180[None, :]
+    for r0 in range(0, lat.size, chunk_rows):
+        r1 = min(r0 + chunk_rows, lat.size)
+        lat_block = np.repeat(lat[r0:r1, None], lon_180.size, axis=1)
+        lon_block = np.repeat(lon_row, r1 - r0, axis=0)
+        mask[r0:r1, :] = globe.is_land(lat_block, lon_block)
+    return mask
+
+
+def _read_valid_cf_mask(
+    path: Path,
+    tech: str,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    probe_steps: int = 24,
+) -> np.ndarray:
+    """读取 ERA5Land CF 有效格点掩膜，用于避开海上缺测或填 0 格点。"""
+    var_name = full_precompute.era5land_cf_var(tech)
+    with cf_low_resource.open_h5(path, "r") as f:
+        d = f[var_name]
+        n_probe = min(int(probe_steps), int(d.shape[0]))
+        valid = np.zeros(tuple(int(x) for x in d.shape[1:]), dtype=bool)
+        positive = np.zeros_like(valid)
+        for t in range(n_probe):
+            arr = d[t, :, :]
+            finite = np.isfinite(arr)
+            valid |= finite
+            positive |= finite & (arr > 0.0)
+    land = _regular_land_mask(lat, lon)
+    if land is not None:
+        valid &= (land | positive)
+    else:
+        logger.warning(
+            "未找到 global_land_mask，使用前 %d 个时次内出现正 CF 的格点估计 ERA5Land 有效格点",
+            n_probe,
+        )
+        valid = positive
+    if not np.any(valid):
+        raise ValueError(f"{path}: {var_name} 前 {n_probe} 个时次均无有效格点")
+    return valid
+
+
 def _read_month_station_cf(
     path: Path,
     tech: str,
@@ -72,7 +130,7 @@ def _read_month_station_cf(
     lon_idx: np.ndarray,
     weights: np.ndarray,
 ) -> tuple[pd.DatetimeIndex, np.ndarray]:
-    """读取一个 ERA5Land 月文件的四点加权场站 CF。"""
+    """读取一个 ERA5Land 月文件的加权场站 CF。"""
     var_name = full_precompute.era5land_cf_var(tech)
     n_station = lat_idx.shape[0]
     with cf_low_resource.open_h5(path, "r") as f:
@@ -80,13 +138,16 @@ def _read_month_station_cf(
         d = f[var_name]
         out = np.zeros((d.shape[0], n_station), dtype=np.float32)
         for corner in range(4):
+            corner_weight = weights[:, corner]
+            if not np.any(corner_weight != 0.0):
+                continue
             corner_values = np.empty((d.shape[0], n_station), dtype=np.float32)
             for lat_i in np.unique(lat_idx[:, corner]):
                 pos = np.where(lat_idx[:, corner] == lat_i)[0]
                 unique_lon, inv = np.unique(lon_idx[pos, corner], return_inverse=True)
                 slab = d[:, int(lat_i), unique_lon].astype(np.float32)
                 corner_values[:, pos] = slab[:, inv]
-            out += corner_values * weights[:, corner][None, :]
+            out += corner_values * corner_weight[None, :]
     return times, out
 
 
@@ -121,6 +182,8 @@ def create_sparse_output(
     files: list[Path],
     baseline_years: str,
     baseline_effective: str,
+    interpolation_method: str,
+    corner_order: str,
     compress_level: int,
 ) -> netCDF4.Dataset:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,8 +260,8 @@ def create_sparse_output(
     ds.baseline_years_effective = baseline_effective
     ds.resource_variable = full_precompute.era5land_cf_var(tech)
     ds.resource_units = "1"
-    ds.interpolation_method = "bilinear_4point"
-    ds.corner_order = "southwest,southeast,northwest,northeast"
+    ds.interpolation_method = interpolation_method
+    ds.corner_order = corner_order
     ds.window_hours = "24"
     ds.window_steps = "24"
     ds.timestep_hours = "1"
@@ -241,15 +304,44 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
     if shape[1] != lat.size or shape[2] != lon.size:
         raise ValueError(f"{files[0]}: CF 变量形状与 lat/lon 不一致：{shape}")
 
-    match = cf_low_resource.bilinear_four_point_regular(
-        lat,
-        lon,
-        stations["lat"].to_numpy(np.float64),
-        stations["lon"].to_numpy(np.float64),
-    )
+    station_lats = stations["lat"].to_numpy(np.float64)
+    station_lons = stations["lon"].to_numpy(np.float64)
+    if args.threshold_interp == "bilinear":
+        match = cf_low_resource.bilinear_four_point_regular(
+            lat,
+            lon,
+            station_lats,
+            station_lons,
+        )
+        interpolation_method = "bilinear_4point"
+        corner_order = "southwest,southeast,northwest,northeast"
+    else:
+        valid_mask = _read_valid_cf_mask(files[0], tech, lat, lon)
+        nearest_lat, nearest_lon, _ = sm.nearest_index_regular(
+            lat,
+            sm.normalize_grid_lon(lon),
+            station_lats,
+            sm.lon_to_180(station_lons),
+        )
+        match = cf_low_resource.nearest_valid_point_regular(
+            lat,
+            lon,
+            valid_mask,
+            station_lats,
+            station_lons,
+        )
+        replaced = np.count_nonzero(
+            (match.lat_idx[:, 0] != nearest_lat) | (match.lon_idx[:, 0] != nearest_lon)
+        )
+        logger.info(
+            "[%s/%s] 最近有效格点匹配：有效网格=%d/%d，替换最近邻无效格点=%d",
+            scenario, tech, int(valid_mask.sum()), int(valid_mask.size), int(replaced),
+        )
+        interpolation_method = "nearest_valid"
+        corner_order = "nearest_valid,unused,unused,unused"
     weight_sum = match.weights.sum(axis=1)
     if not np.allclose(weight_sum, 1.0, atol=1e-5):
-        raise ValueError("四点双线性权重和不等于 1")
+        raise ValueError("场站匹配权重和不等于 1")
 
     ds = create_sparse_output(
         out_path,
@@ -260,6 +352,8 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
         files=files,
         baseline_years=args.baseline_years,
         baseline_effective=full_precompute.effective_years(files),
+        interpolation_method=interpolation_method,
+        corner_order=corner_order,
         compress_level=args.compress_level,
     )
     try:

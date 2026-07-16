@@ -64,7 +64,7 @@ class SparseThreshold:
 
 @dataclass
 class FourPointMatch:
-    """规则网格四点双线性匹配结果。"""
+    """规则网格最多四点加权匹配结果。"""
 
     lat_idx: np.ndarray
     lon_idx: np.ndarray
@@ -378,6 +378,95 @@ def bilinear_four_point_regular(
         corner_lat[i] = lat[lat_idx[i]].astype(np.float32)
         corner_lon[i] = lon_raw[lon_idx[i]].astype(np.float32)
 
+    return FourPointMatch(
+        lat_idx=lat_idx,
+        lon_idx=lon_idx,
+        weights=weights,
+        corner_lat=corner_lat,
+        corner_lon=corner_lon,
+    )
+
+
+def nearest_valid_point_regular(
+    grid_lat: np.ndarray,
+    grid_lon: np.ndarray,
+    valid_mask: np.ndarray,
+    station_lats: np.ndarray,
+    station_lons: np.ndarray,
+) -> FourPointMatch:
+    """在规则经纬度网格上为场站选择最近的有效格点。
+
+    ERA5Land 在海上常为缺测值。直接最近邻可能选中海上缺测格点，因此这里先按
+    经纬度找最近格点；若该格点无效，则向外扩展索引窗口，选择距离场站最近的
+    有效格点。返回仍保持 ``corner=4`` 的形状，只有第 0 个 corner 权重为 1。
+    """
+    lat = np.asarray(grid_lat, dtype=np.float64)
+    lon_raw = np.asarray(grid_lon, dtype=np.float64)
+    lon_180 = sm.normalize_grid_lon(lon_raw)
+    valid = np.asarray(valid_mask, dtype=bool)
+    sta_lat = np.asarray(station_lats, dtype=np.float64)
+    sta_lon = sm.lon_to_180(station_lons)
+
+    if valid.shape != (lat.size, lon_raw.size):
+        raise ValueError(
+            f"有效格点掩膜形状 {valid.shape} 与网格 {(lat.size, lon_raw.size)} 不一致"
+        )
+    if not np.any(valid):
+        raise ValueError("ERA5Land CF 有效格点掩膜为空，无法匹配场站")
+
+    nearest_lat, nearest_lon, _ = sm.nearest_index_regular(
+        lat, lon_180, sta_lat, sta_lon
+    )
+    n_sta = sta_lat.shape[0]
+    chosen_lat = np.empty(n_sta, dtype=np.int64)
+    chosen_lon = np.empty(n_sta, dtype=np.int64)
+
+    n_lat, n_lon = valid.shape
+    max_radius = max(n_lat, n_lon)
+    for i in range(n_sta):
+        lat0 = int(nearest_lat[i])
+        lon0 = int(nearest_lon[i])
+        if valid[lat0, lon0]:
+            chosen_lat[i] = lat0
+            chosen_lon[i] = lon0
+            continue
+
+        best_lat = best_lon = -1
+        best_dist = np.inf
+        for radius in range(1, max_radius + 1):
+            lat_start = max(0, lat0 - radius)
+            lat_stop = min(n_lat, lat0 + radius + 1)
+            lon_candidates = np.arange(lon0 - radius, lon0 + radius + 1) % n_lon
+            lon_candidates = np.unique(lon_candidates)
+            sub_valid = valid[lat_start:lat_stop, :][:, lon_candidates]
+            if not np.any(sub_valid):
+                continue
+
+            local_lat, local_lon = np.where(sub_valid)
+            cand_lat = local_lat + lat_start
+            cand_lon = lon_candidates[local_lon]
+            dlat = np.abs(lat[cand_lat] - sta_lat[i])
+            dlon = np.abs(((lon_180[cand_lon] - sta_lon[i] + 180.0) % 360.0) - 180.0)
+            dist = np.maximum(dlat, dlon)
+            j = int(np.argmin(dist))
+            best_lat = int(cand_lat[j])
+            best_lon = int(cand_lon[j])
+            best_dist = float(dist[j])
+            break
+
+        if best_lat < 0 or not np.isfinite(best_dist):
+            raise ValueError(
+                f"场站 {i} ({sta_lat[i]:.6f}, {sta_lon[i]:.6f}) 找不到有效 ERA5Land 格点"
+            )
+        chosen_lat[i] = best_lat
+        chosen_lon[i] = best_lon
+
+    lat_idx = np.repeat(chosen_lat[:, None], 4, axis=1)
+    lon_idx = np.repeat(chosen_lon[:, None], 4, axis=1)
+    weights = np.zeros((n_sta, 4), dtype=np.float32)
+    weights[:, 0] = 1.0
+    corner_lat = np.repeat(lat[chosen_lat, None], 4, axis=1).astype(np.float32)
+    corner_lon = np.repeat(lon_raw[chosen_lon, None], 4, axis=1).astype(np.float32)
     return FourPointMatch(
         lat_idx=lat_idx,
         lon_idx=lon_idx,

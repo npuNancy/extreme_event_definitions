@@ -8,8 +8,8 @@
 具体目标：
 
 1. 对每个 SSP 情景、每个技术类型分别生成一个稀疏阈值文件。
-2. 对每个场站点，选取其四周 4 个 ERA5Land 网格点。
-3. 用四点双线性权重从 ERA5Land CF 得到场站级 ERA5Land CF 时间序列。
+2. 对每个场站点，默认选取最近的 ERA5Land 有效格点，避开海上缺测格点。
+3. 可选使用四点双线性权重从 ERA5Land CF 得到场站级 ERA5Land CF 时间序列。
 4. 基于场站级 ERA5Land CF 的 24h 滚动平均异常计算月-小时气候态和 P5 低资源阈值。
 5. 下游 Pipeline B 直接读取稀疏阈值文件中对应场站的阈值和气候态。
 
@@ -93,17 +93,24 @@ scenario = ssp126 | ssp245 | ssp585
 tech = wind | solar
 baseline_years_requested = 2015-2025
 baseline_years_effective = 2015-2025
-interpolation_method = bilinear_4point
+interpolation_method = nearest_valid | bilinear_4point
 window_hours = 24
 percentile = 5
 created_by = scripts/precompute_station_low_resource_thresholds.py
 ```
 
-## 4. 四周网格选择与权重
+## 4. ERA5Land 网格选择与权重
 
 ERA5Land 是规则经纬度网格，经度统一按 `[-180, 180)` 做匹配。
 
-对每个场站：
+默认对每个场站使用 `nearest_valid`：
+
+1. 先找到经纬度最近的 ERA5Land 格点。
+2. 若该格点 CF 有效，直接使用该格点。
+3. 若该格点在海上或 CF 缺测，则向外寻找最近的有效格点。
+4. 输出仍保持 `corner=4`，第 0 个 corner 权重为 1，其余 corner 权重为 0。
+
+可选 `bilinear` 时，对每个场站：
 
 1. 在纬度轴上找到包围场站纬度的两个索引。
 2. 在经度轴上找到包围场站经度的两个索引，经度距离按 360 度环形处理。
@@ -120,8 +127,8 @@ ERA5Land 是规则经纬度网格，经度统一按 `[-180, 180)` 做匹配。
 对每个场站：
 
 1. 按时间拼接 ERA5Land 月文件。
-2. 读取四个 ERA5Land 网格点的 CF。
-3. 对四个点按双线性权重加权，得到场站级 ERA5Land CF。
+2. 按 `nearest_valid` 或 `bilinear` 读取 ERA5Land 网格点 CF 并加权，得到场站级 ERA5Land CF。
+3. 默认 `nearest_valid` 只读取最近有效格点，避免近海无数据格点污染阈值。
 4. 计算 24h centered rolling mean，`min_periods = window_steps`。
 5. 计算月-小时气候态 `clim(month,hour,station)`。
 6. 计算异常 `anom = roll - clim[month,hour,station]`。
@@ -160,6 +167,7 @@ scripts/precompute_station_low_resource_thresholds.py
 --scenario ssp126
 --tech wind|solar|both
 --baseline_years 2015-2025
+--threshold_interp nearest_valid|bilinear
 --output_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025
 --station_chunk 128
 --time_chunk 512
@@ -195,7 +203,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 
 新增或更新测试：
 
-1. 四周 ERA5Land 网格选择：索引顺序稳定，权重和为 1。
+1. 最近有效 ERA5Land 格点选择：最近邻无效时能替换为最近有效格点，权重和为 1。
 2. 经度接缝：`179.95/-179.95` 附近能正确选取环形经度邻点。
 3. 稀疏阈值文件 schema：维度、变量、关键属性齐全。
 4. Pipeline B 读取稀疏阈值：同一 `(lon, lat, type)` 能匹配到正确 station。

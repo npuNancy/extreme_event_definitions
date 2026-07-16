@@ -78,6 +78,11 @@ extreme_event_definitions/
 当前低资源事件使用 ERA5Land 2015-2025 风光 CF 先计算阈值；未来模式/SSP
 只负责被判定是否发生事件。项目根目录提供两种入口组合。
 
+`step1_low_resource_thresholds.py` 计算 ERA5Land 稀疏阈值时默认使用
+`--threshold_interp nearest_valid`，即为每个场站选择最近的 ERA5Land 有效格点，
+以避开近海无 CF 数据的格点；如需沿用四点双线性，可显式传入
+`--threshold_interp bilinear`。
+
 ### 两阶段流程
 
 适用于未来模式/SSP 的目标 CF 已经可用，希望一次性输出所有事件：
