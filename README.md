@@ -86,7 +86,6 @@ extreme_event_definitions/
 python step1_low_resource_thresholds.py \
   --cf_root data/cfs \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --scenario ssp126 \
   --tech both \
   --baseline_years 2015-2025
 
@@ -140,6 +139,8 @@ python step2_split_E2_low_resource.py \
 
 说明：
 
+- 根目录流程入口和 `scripts/` CLI 会把日志写入 `logs/`，文件名格式为
+  `<入口名>_YYYYMMDD_HHMMSS.log`；日志行时间戳格式为 `YYYY-MM-DD HH:MM:SS`。
 - `step2_complete_extreme_events.py` 会调用场站流程并默认计算 `low_resource`。
 - `step2_split_E1_weather_extremes.py` 会强制附加 `--no_low_resource`。
 - `step2_split_E2_low_resource.py` 会读取 E1 输出文件中的 `match_method`，确保低资源目标 CF 抽取方式与 E1 一致。
