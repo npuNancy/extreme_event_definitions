@@ -83,6 +83,10 @@ extreme_event_definitions/
 以避开近海无 CF 数据的格点；如需沿用四点双线性，可显式传入
 `--threshold_interp bilinear`。
 
+计算 `ssp245` 或 `ssp585` 时，step1 默认会尝试从同目录下已完成的 `ssp126`
+同技术类型阈值文件复用重叠 `(lon, lat, type)` 场站，只计算非交集场站；
+如需强制完整计算，可传入 `--no_reuse_thresholds`。
+
 ### 两阶段流程
 
 适用于未来模式/SSP 的目标 CF 已经可用，希望一次性输出所有事件：
