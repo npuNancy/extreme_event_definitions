@@ -26,7 +26,9 @@ logger = logging.getLogger("step1_split_E2a")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="抽取指定时间块的 union station CF cache。")
-    parser.add_argument("--cf_root", default="/data/cfs")
+    parser.add_argument(
+        "--cf_root", default=os.path.expandvars("$HOME/data/cfs")
+    )
     parser.add_argument("--union_stations_csv", required=True)
     parser.add_argument("--tech", choices=["wind", "solar"], required=True)
     parser.add_argument("--year_month_start", required=True)

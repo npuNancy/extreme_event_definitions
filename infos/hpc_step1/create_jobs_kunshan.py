@@ -103,7 +103,7 @@ def run(args: argparse.Namespace) -> Path:
         script = jobs_dir / f"job_{job_name}.sh"
         command = (
             "python step1_split_E2a_extract_union_station_cf_monthly.py "
-            "--cf_root /data/cfs "
+            '--cf_root "$HOME/data/cfs" '
             f"--union_stations_csv {union_dir}/stations_union_ssp126_ssp245_ssp585.csv "
             f"--tech {tech} "
             f"--year_month_start {row.year_month_start} "
