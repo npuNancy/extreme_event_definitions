@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 工作分支：`hpc-step1-low-resource-acceleration`
-- 当前阶段：先完善方案文档，随后实现昆山双服务器 step1 作业生成、运行、监控和核时统计代码。
+- 当前阶段：超算拆分代码、E1 产物、远端 Python 环境和代码仓库均已准备；需要先把作业生成器的 CF 根目录改为 `$HOME/data/cfs` 并重新生成 Slurm 脚本，同时等待 wind 缺失月份上传完成，之后才能提交 E2a 前期测试作业。
 - 参考文档：
   - `/data6/yanxiaokai/project_climate/bcsd/document/超算BCSD运行优化代码修改计划.md`
   - `/data6/yanxiaokai/project_climate/bcsd/infos/goal.md`
@@ -15,8 +15,8 @@
 
 | 技术类型 | 服务器 | Host | 账号 | 输入数据 |
 |---|---|---|---|---|
-| wind | 昆山185 | `scnet-kunshan-185` | `acbw9wpn5k` | `/data/cfs/CFs_of_wind_ERA5Land` |
-| solar | 昆山199 | `scnet-kunshan-199` | `aclym5felp` | `/data/cfs/CFs_of_solar_ERA5Land` |
+| wind | 昆山185 | `scnet-kunshan-185` | `acbw9wpn5k` | `~/data/cfs/CFs_of_wind_ERA5Land` |
+| solar | 昆山199 | `scnet-kunshan-199` | `aclym5felp` | `~/data/cfs/CFs_of_solar_ERA5Land` |
 
 每台服务器只处理自己的技术类型，但都需要对三个 SSP 场站输出低资源阈值：
 
@@ -65,19 +65,26 @@ uv: /public/home/acbw9wpn5k/.local/bin/uv
 Python: 3.12.13
 ```
 
-待处理：
-
-1. 检查时 `/data/cfs/CFs_of_wind_ERA5Land` 尚未出现或尚未完成上传，`wind_cf_*.nc` 文件数为 0。
-2. `/public/home/acbw9wpn5k/.venv` 已存在，但缺少 step1 必要依赖：
+当前准备状态：
 
 ```text
-numpy
-pandas
-netCDF4
-h5py
+代码分支：hpc-step1-low-resource-acceleration
+代码提交：27705c1e919c1cbdb2b7c693ac4ad5bfe774a758
+E1 产物：已同步并通过 SHA-256 校验
+Slurm 脚本：已生成，但旧脚本仍使用错误的 /data/cfs；修正生成器后必须重新生成
+共享 venv：step1 入口依赖已安装并通过导入检查
 ```
 
-本项目 `requirements.txt` 中还包含 `global-land-mask`，step1 的默认 `nearest_valid` 会优先使用它识别陆地点，也应安装。
+wind 数据位于 `~/data/cfs/CFs_of_wind_ERA5Land`。当前共发现 124 个 `wind_cf_*.nc`，其中2015-2024基准期为116/120，缺少：
+
+```text
+2015-11
+2018-06
+2019-08
+2022-06
+```
+
+缺失月份补齐前不提交 wind E2a 作业。
 
 ### 3.2 scnet-kunshan-199
 
@@ -94,10 +101,17 @@ Slurm: /opt/gridview/slurm/bin/sbatch, /opt/gridview/slurm/bin/squeue
 Python: 3.12.13
 ```
 
-待处理：
+当前准备状态：
 
-1. 检查时 `/data/cfs/CFs_of_solar_ERA5Land` 尚未出现或尚未完成上传，`solar_cf_*.nc` 文件数为 0。
-2. 199 可以看到 185 的共享 venv，但该 venv 当前同样缺少 step1 必要依赖。
+```text
+代码分支：hpc-step1-low-resource-acceleration
+代码提交：27705c1e919c1cbdb2b7c693ac4ad5bfe774a758
+E1 产物：已同步并通过 SHA-256 校验
+Slurm 脚本：已生成，但旧脚本仍使用错误的 /data/cfs；修正生成器后必须重新生成
+共享 venv：可访问且 step1 入口依赖已通过导入检查
+```
+
+solar 数据位于 `~/data/cfs/CFs_of_solar_ERA5Land`。当前共发现132个 `solar_cf_*.nc`，2015-2024基准期120个月完整。
 
 ## 4. 总体设计
 
@@ -180,17 +194,17 @@ step1_split_E3_thresholds_from_union_cache.py
       sparse_station_ERA5Land_2015-2024/
 ```
 
-ERA5Land CF 数据位于 `/data/cfs/`：
+ERA5Land CF 数据位于每个账号自己的 `~/data/cfs/`：
 
 ```text
-scnet-kunshan-185:/data/cfs/CFs_of_wind_ERA5Land
-scnet-kunshan-199:/data/cfs/CFs_of_solar_ERA5Land
+scnet-kunshan-185:/public/home/acbw9wpn5k/data/cfs/CFs_of_wind_ERA5Land
+scnet-kunshan-199:/public/home/aclym5felp/data/cfs/CFs_of_solar_ERA5Land
 ```
 
 作业中通过参数指定：
 
 ```bash
---cf_root /data/cfs
+--cf_root "$HOME/data/cfs"
 ```
 
 ### 5.2 本地记录目录
@@ -267,10 +281,10 @@ rsync -av \
 
 ```text
 本地 wind  源：/data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_wind_ERA5Land
-远端 wind  目标：scnet-kunshan-185:/data/cfs/
+远端 wind  目标：scnet-kunshan-185:/public/home/acbw9wpn5k/data/cfs/
 
 本地 solar 源：/data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_solar_ERA5Land
-远端 solar 目标：scnet-kunshan-199:/data/cfs/
+远端 solar 目标：scnet-kunshan-199:/public/home/aclym5felp/data/cfs/
 ```
 
 脱敏上传命令模板：
@@ -285,7 +299,7 @@ rayfile-c \
   -tm -no-meta -symbolic-links follow \
   -retry 10 -retrytimeout 30 \
   -o upload \
-  -d /data/cfs/ \
+  -d /public/home/acbw9wpn5k/data/cfs/ \
   -s /data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_wind_ERA5Land
 
 # scnet-kunshan-199 solar
@@ -297,7 +311,7 @@ rayfile-c \
   -tm -no-meta -symbolic-links follow \
   -retry 10 -retrytimeout 30 \
   -o upload \
-  -d /data/cfs/ \
+  -d /public/home/aclym5felp/data/cfs/ \
   -s /data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_solar_ERA5Land
 ```
 
@@ -305,14 +319,14 @@ rayfile-c \
 
 ```bash
 # wind on scnet-kunshan-185
-find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
-ls -lh /data/cfs/CFs_of_wind_ERA5Land/wind_cf_2015_01.nc
-ls -lh /data/cfs/CFs_of_wind_ERA5Land/wind_cf_2024_12.nc
+find "$HOME/data/cfs/CFs_of_wind_ERA5Land" -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
+ls -lh "$HOME/data/cfs/CFs_of_wind_ERA5Land/wind_cf_2015_01.nc"
+ls -lh "$HOME/data/cfs/CFs_of_wind_ERA5Land/wind_cf_2024_12.nc"
 
 # solar on scnet-kunshan-199
-find /data/cfs/CFs_of_solar_ERA5Land -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
-ls -lh /data/cfs/CFs_of_solar_ERA5Land/solar_cf_2015_01.nc
-ls -lh /data/cfs/CFs_of_solar_ERA5Land/solar_cf_2024_12.nc
+find "$HOME/data/cfs/CFs_of_solar_ERA5Land" -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
+ls -lh "$HOME/data/cfs/CFs_of_solar_ERA5Land/solar_cf_2015_01.nc"
+ls -lh "$HOME/data/cfs/CFs_of_solar_ERA5Land/solar_cf_2024_12.nc"
 ```
 
 2015-2024 完整基准期应为 120 个月文件。若文件数不足，不提交生产作业。
@@ -393,7 +407,7 @@ source /public/home/acbw9wpn5k/.venv/bin/activate
 python -V
 ```
 
-该环境可以被 199 访问，但当前缺少必要依赖。建议在 185 上补装一次，让 199 复用同一个环境：
+该环境可以被199访问，step1所需依赖已经在185上完成安装，并在两台服务器分别通过导入检查。后续需要更新依赖时仍只在185上操作，让199复用同一个环境：
 
 ```bash
 ssh scnet-kunshan-185
@@ -403,7 +417,20 @@ cd ~/extreme_event_definitions
 uv pip install -r requirements.txt
 ```
 
-最低依赖检查：
+当前已确认的关键依赖版本：
+
+```text
+numpy 2.2.6
+pandas 2.2.3
+netCDF4 1.7.2
+h5py 3.13.0
+global-land-mask 1.0.0
+scipy 1.15.3
+xarray 2025.1.2
+shapely 2.0.7
+```
+
+依赖检查：
 
 ```bash
 source /public/home/acbw9wpn5k/.venv/bin/activate
@@ -446,7 +473,7 @@ infos/hpc_step1/create_jobs_kunshan.py
 职责：
 
 1. 按服务器生成对应技术类型的 E2a/E2b/E3 Slurm 作业。
-2. 自动写入 `--cf_root /data/cfs`。
+2. 自动写入 `--cf_root "$HOME/data/cfs"`；不得使用节点级 `/data/cfs`。
 3. 自动写入 E1 生成的并集场站表和 SSP 映射文件路径。
 4. 读取 E1 生成的 `e2a_chunk_plan_2015-2024.csv`，自动生成 1 个 E2a 前期测试作业和 20 个 E2a 正式分块作业，共 21 个 E2a 时间缓存块。
 5. 自动设置 E2a 时间分块缓存、E2b 完整 union cache、最终阈值输出路径和日志路径；生产作业默认不传 `--overwrite`。
@@ -481,6 +508,13 @@ infos/hpc_step1/create_jobs_kunshan.py
   submit_step1_split_E2a_initial_solar.sh
   submit_step1_split_E2a_batches_solar.sh
 ```
+
+每个技术类型的两个 E2a submit 脚本职责不同：
+
+1. `submit_step1_split_E2a_initial_<tech>.sh`：只提交 `2015-01` 一个前期测试作业，用于测量 MaxRSS 和运行时间，据此调整正式作业的 `kernel_num` 与 `--time`。
+2. `submit_step1_split_E2a_batches_<tech>.sh`：测试作业完成、输出有效且资源参数调整后，提交其余20个正式分块作业；不重复提交 `2015-01`。
+
+两个 submit 脚本不能连续直接执行。必须先运行 initial，等待测试完成并完成资源校准，再运行 batches。
 
 服务器分工由生成器内置默认值控制：
 
@@ -589,7 +623,7 @@ E2a 每个 job 处理一个 year 或一个 year-month/month-range，由参数指
 
 ```bash
 python step1_split_E2a_extract_union_station_cf_monthly.py \
-  --cf_root /data/cfs \
+  --cf_root "$HOME/data/cfs" \
   --union_stations_csv outputs/cache/era5land_union_station_cf/union_stations/stations_union_ssp126_ssp245_ssp585.csv \
   --tech wind \
   --year_month_start 2015-01 \
@@ -621,7 +655,7 @@ E2a 正式作业以 6 个月为一个作业。由于前期测试已经完成 201
 
 ```bash
 python step1_split_E2a_extract_union_station_cf_monthly.py \
-  --cf_root /data/cfs \
+  --cf_root "$HOME/data/cfs" \
   --union_stations_csv outputs/cache/era5land_union_station_cf/union_stations/stations_union_ssp126_ssp245_ssp585.csv \
   --tech wind \
   --year_month_start 2016-01 \
@@ -761,16 +795,16 @@ python -m py_compile \
 wind 服务器：
 
 ```bash
-find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
+find "$HOME/data/cfs/CFs_of_wind_ERA5Land" -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
 ```
 
 solar 服务器：
 
 ```bash
-find /data/cfs/CFs_of_solar_ERA5Land -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
+find "$HOME/data/cfs/CFs_of_solar_ERA5Land" -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
 ```
 
-文件数必须是 120，除非显式使用非完整 baseline years。
+检查时只统计2015-2024基准期，不能用包含2025年的目录总文件数代替。基准期必须完整覆盖120个月；任何缺月都不得提交对应技术类型的 E2a 作业。
 
 ### 10.3 队列去重
 
@@ -1005,15 +1039,15 @@ print("ok")
 PY
 ```
 
-缺失时在 185 上补装，并在 199 上复查共享 venv 是否可用。
+当前依赖已经补齐。后续若出现缺失，仍在185上补装，并在199上复查共享 venv 是否可用。
 
 ### 15.3 输入数据缺失
 
 检查 120 个月文件和首尾文件：
 
 ```bash
-find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | head
-find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | tail
+find "$HOME/data/cfs/CFs_of_wind_ERA5Land" -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | head
+find "$HOME/data/cfs/CFs_of_wind_ERA5Land" -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | tail
 ```
 
 如果上传尚未完成，不提交作业。
@@ -1193,7 +1227,7 @@ scripts/hpc_step1_validate_thresholds.py
 
 1. 不在登录节点直接运行完整 step1，只通过 Slurm 作业运行。
 2. 不把网页密码、rayfile token、账号密码表写入仓库。
-3. 不删除远端 `/data/cfs`、`outputs/`、`logs/`。
+3. 不删除远端 `~/data/cfs`、`outputs/`、`logs/`。
 4. 不使用 `git reset --hard` 或覆盖远端脏工作区。
 5. 不因作业 `PENDING` 就重复提交。
 6. 不把 Slurm `COMPLETED` 直接等同于输出有效。
