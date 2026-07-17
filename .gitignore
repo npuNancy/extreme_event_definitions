@@ -18,6 +18,7 @@ outputs
 ref_code
 
 run_*.sh
+infos/hpc_step1/completion_status
 
 # Output directories
 weather_nc/
