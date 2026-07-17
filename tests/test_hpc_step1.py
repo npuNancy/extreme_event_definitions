@@ -274,3 +274,82 @@ def test_job_generator_uses_chunk_plan_without_overwrite(tmp_path, monkeypatch):
         jobs_dir / "submit_step1_split_E2a_batches_wind.sh"
     ).read_text(encoding="utf-8")
     assert formal_submit.count("sbatch --parsable") == 20
+
+
+def test_e3_handles_unsorted_positions(tmp_path):
+    """ssp245/585 场站在 union 中无序时，E3 不得报 h5py indexing 顺序错误。
+
+    回归：算完 ssp126 后进入 ssp245 时 'Indexing elements must be in increasing order'。
+    h5py fancy indexing 要求索引递增，故 _match_from_cache 和 cf 块读取都需排序恢复。
+    """
+    cache_path = tmp_path / "merged.nc"
+    n_station = 4
+    times = pd.date_range("2015-01-01", periods=72, freq="h")
+    ds = create_station_cache(cache_path, n_time=len(times), n_station=n_station, compress_level=1)
+    ds["time"][:] = times.to_numpy(dtype="datetime64[s]").astype(np.int64)
+    ds["union_station_index"][:] = np.arange(n_station)
+    ds["station_lon"][:] = [116.0, 117.0, 118.0, 119.0]
+    ds["station_lat"][:] = [40.0, 39.5, 39.0, 38.5]
+    ds["station_type"][:] = 1
+    ds["era5_lat_idx"][:] = [[0, 0, 0, 0]] * n_station
+    ds["era5_lon_idx"][:] = [[0, 0, 0, 0]] * n_station
+    ds["era5_lat"][:] = [[40.0] * 4, [39.5] * 4, [39.0] * 4, [38.5] * 4]
+    ds["era5_lon"][:] = [[116.0] * 4, [117.0] * 4, [118.0] * 4, [119.0] * 4]
+    ds["weight"][:] = [[1.0, 0.0, 0.0, 0.0]] * n_station
+    # cf[:, s] 编码 station s，使各 station 阈值互不相同，便于校验读取顺序
+    for s in range(n_station):
+        ds["cf"][:, s] = np.linspace(0.1 + 0.2 * s, 0.9 + 0.2 * s, len(times), dtype=np.float32)
+    ds.cache_kind = "era5land_union_station_cf"
+    ds.tech = "wind"
+    ds.baseline_years = "2015-2024"
+    ds.baseline_years_effective = "2015-2024"
+    ds.chunk_count = "21"
+    ds.interpolation_method = "nearest_valid"
+    ds.corner_order = "nearest_valid,unused,unused,unused"
+    ds.source_files = ""
+    ds.close()
+
+    union_csv = tmp_path / "union.csv"
+    pd.DataFrame([
+        {"union_station_index": i, "lon": 116.0 + i, "lat": 40.0 - 0.5 * i, "type": "wind"}
+        for i in range(n_station)
+    ]).to_csv(union_csv, index=False)
+
+    # ssp245/585 的 union_station_index 故意无序（修复前触发 h5py 顺序错误）
+    order_by_scenario = {"ssp126": [0, 1, 2, 3], "ssp245": [3, 1, 0, 2], "ssp585": [2, 0, 3, 1]}
+    map_paths = {}
+    for scenario, order in order_by_scenario.items():
+        path = tmp_path / f"map_{scenario}.csv"
+        rows = []
+        for sidx, uidx in enumerate(order):
+            rows.append({
+                "scenario_station_index": sidx,
+                "union_station_index": uidx,
+                "lon": 116.0 + uidx, "lat": 40.0 - 0.5 * uidx,
+                "type": "wind", "activation_year": 2030, "capacity_gw": 1.0,
+            })
+        pd.DataFrame(rows).to_csv(path, index=False)
+        map_paths[scenario] = path
+
+    outputs = e3.run(Namespace(
+        union_station_cf_cache=str(cache_path),
+        union_stations_csv=str(union_csv),
+        index_map_ssp126=str(map_paths["ssp126"]),
+        index_map_ssp245=str(map_paths["ssp245"]),
+        index_map_ssp585=str(map_paths["ssp585"]),
+        tech="wind",
+        baseline_years="2015-2024",
+        output_dir=str(tmp_path / "thresholds"),
+        station_chunk=2,
+        compress_level=1,
+        overwrite=False,
+    ))
+
+    assert len(outputs) == 3
+    with h5py.File(outputs[0], "r") as handle:  # ssp126 有序
+        thr126 = handle["threshold"][:]
+    with h5py.File(outputs[1], "r") as handle:  # ssp245 无序 [3, 1, 0, 2]
+        thr245 = handle["threshold"][:]
+    assert np.isfinite(thr245).all()
+    # ssp245 scenario station j 取自 union order[j]，应等于 ssp126（union 顺序）对应位置
+    np.testing.assert_allclose(thr245, thr126[np.array([3, 1, 0, 2])])

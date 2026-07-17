@@ -40,12 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _match_from_cache(handle, positions: np.ndarray) -> cf_low_resource.FourPointMatch:
+    positions = np.asarray(positions)
+    # h5py fancy indexing 要求索引递增；排序读取后再按原顺序恢复。
+    order = np.argsort(positions, kind="stable")
+    inv = np.empty(order.shape, dtype=np.int64)
+    inv[order] = np.arange(order.size)
+    sorted_pos = positions[order]
     return cf_low_resource.FourPointMatch(
-        lat_idx=handle["era5_lat_idx"][positions].astype(np.int64),
-        lon_idx=handle["era5_lon_idx"][positions].astype(np.int64),
-        weights=handle["weight"][positions].astype(np.float32),
-        corner_lat=handle["era5_lat"][positions].astype(np.float32),
-        corner_lon=handle["era5_lon"][positions].astype(np.float32),
+        lat_idx=handle["era5_lat_idx"][sorted_pos][inv].astype(np.int64),
+        lon_idx=handle["era5_lon_idx"][sorted_pos][inv].astype(np.int64),
+        weights=handle["weight"][sorted_pos][inv].astype(np.float32),
+        corner_lat=handle["era5_lat"][sorted_pos][inv].astype(np.float32),
+        corner_lon=handle["era5_lon"][sorted_pos][inv].astype(np.float32),
     )
 
 
@@ -153,7 +159,12 @@ def run(args: argparse.Namespace) -> list[Path]:
                     )
                     for c0 in range(0, len(stations), args.station_chunk):
                         c1 = min(c0 + args.station_chunk, len(stations))
-                        block = cache["cf"][:, positions[c0:c1]].astype(np.float32)
+                        chunk_pos = positions[c0:c1]
+                        # h5py fancy indexing 要求索引递增；排序读取后恢复原 chunk 顺序。
+                        chunk_order = np.argsort(chunk_pos, kind="stable")
+                        chunk_inv = np.empty(chunk_order.shape, dtype=np.int64)
+                        chunk_inv[chunk_order] = np.arange(chunk_order.size)
+                        block = cache["cf"][:, chunk_pos[chunk_order]].astype(np.float32)[:, chunk_inv]
                         clim, threshold, valid_count = full_precompute.compute_threshold_block(
                             block, times
                         )
