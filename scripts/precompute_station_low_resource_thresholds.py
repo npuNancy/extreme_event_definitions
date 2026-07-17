@@ -27,6 +27,7 @@ from tools.logging_utils import setup_logging  # noqa: E402
 logger = logging.getLogger("precompute_station_low_resource_thresholds")
 
 DEFAULT_OUTPUT_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025"
+DEFAULT_STATION_CF_CACHE_DIR = "outputs/cache/era5land_station_cf"
 STATION_KEY_DECIMALS = 5
 
 
@@ -49,6 +50,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--station_chunk", type=int, default=128)
     p.add_argument("--compress_level", type=int, default=4)
+    p.add_argument(
+        "--station_cf_cache_dir",
+        default=DEFAULT_STATION_CF_CACHE_DIR,
+        help="ERA5Land 场站 CF 缓存目录。",
+    )
+    p.add_argument(
+        "--station_cf_cache_compress_level",
+        type=int,
+        default=1,
+        help="场站 CF 缓存压缩等级；建议 1-2，避免阈值阶段读取过慢。",
+    )
+    p.add_argument(
+        "--cache_time_chunk",
+        type=int,
+        default=None,
+        help="生成场站 CF 缓存时的时间读取块；默认使用 HDF5 原生时间 chunk。",
+    )
+    p.add_argument(
+        "--overwrite_station_cf_cache",
+        action="store_true",
+        help="即使场站 CF 缓存已存在且完整，也重新生成。",
+    )
+    p.add_argument(
+        "--no_station_cf_cache",
+        action="store_true",
+        help="关闭场站 CF 缓存，退回旧的直接读取 ERA5Land 月文件路径，仅用于调试。",
+    )
     p.add_argument(
         "--reuse_from_scenario",
         default="ssp126",
@@ -76,6 +104,14 @@ class ReuseSourceThreshold:
     clim: np.ndarray
     threshold: np.ndarray
     valid_count: np.ndarray
+
+
+@dataclass
+class StationCfCache:
+    """已就绪的 ERA5Land 场站 CF 缓存。"""
+
+    path: Path
+    times: pd.DatetimeIndex
 
 
 def _station_type_code(tech: str) -> int:
@@ -533,6 +569,444 @@ def _close_dataset(ds: netCDF4.Dataset | None) -> None:
         pass
 
 
+def _station_cf_cache_dir(args) -> Path:
+    """返回场站 CF 缓存目录；兼容测试中手工构造的旧参数对象。"""
+    value = getattr(args, "station_cf_cache_dir", None)
+    if value is None:
+        return Path(args.output_dir).parent / "cache" / "era5land_station_cf"
+    return Path(value)
+
+
+def _station_cf_cache_path(
+    args,
+    *,
+    scenario: str,
+    tech: str,
+    threshold_interp: str,
+) -> Path:
+    """返回当前场站集合对应的 ERA5Land 场站 CF 缓存路径。"""
+    name = (
+        f"station_cf_{scenario}_{tech}_ERA5Land_"
+        f"{args.baseline_years}_{threshold_interp}.nc"
+    )
+    return _station_cf_cache_dir(args) / name
+
+
+def _read_all_times(files: list[Path]) -> pd.DatetimeIndex:
+    """读取并拼接 ERA5Land 月文件时间轴。"""
+    times = [full_precompute.read_month_time(path) for path in files]
+    return pd.DatetimeIndex(np.concatenate([t.values for t in times]))
+
+
+def _time_seconds(times: pd.DatetimeIndex) -> np.ndarray:
+    """把时间轴转成 Unix 秒，便于写入 NetCDF/HDF5。"""
+    return times.to_numpy(dtype="datetime64[s]").astype(np.int64)
+
+
+def _station_cf_cache_compress_level(args) -> int:
+    return int(getattr(args, "station_cf_cache_compress_level", 1))
+
+
+def _cache_time_chunk_arg(args) -> int | None:
+    value = getattr(args, "cache_time_chunk", None)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _overwrite_station_cf_cache(args) -> bool:
+    return bool(getattr(args, "overwrite_station_cf_cache", False))
+
+
+def _no_station_cf_cache(args) -> bool:
+    return bool(getattr(args, "no_station_cf_cache", False))
+
+
+def _source_files_attr(files: list[Path]) -> str:
+    return ",".join(str(p) for p in files)
+
+
+def _validate_station_cf_cache(
+    path: Path,
+    *,
+    scenario: str,
+    tech: str,
+    stations: pd.DataFrame,
+    match: cf_low_resource.FourPointMatch,
+    times: pd.DatetimeIndex,
+    files: list[Path],
+    baseline_years: str,
+    baseline_effective: str,
+    threshold_interp: str,
+    interpolation_method: str,
+) -> None:
+    """校验场站 CF 缓存是否可直接复用。"""
+    expected_attrs = {
+        "cache_kind": "era5land_station_cf",
+        "scenario": scenario,
+        "tech": tech,
+        "baseline_years": baseline_years,
+        "baseline_years_effective": baseline_effective,
+        "threshold_interp": threshold_interp,
+        "interpolation_method": interpolation_method,
+        "resource_variable": full_precompute.era5land_cf_var(tech),
+        "source_files": _source_files_attr(files),
+    }
+    n_station = len(stations)
+    with cf_low_resource.open_h5(path, "r") as f:
+        attrs = _decode_attrs(f)
+        for key, expected in expected_attrs.items():
+            got = attrs.get(key)
+            if got != expected:
+                raise ValueError(f"属性 {key} 不兼容：期望 {expected!r}，实际 {got!r}")
+
+        required_shapes = {
+            "time": (len(times),),
+            "station": (n_station,),
+            "corner": (4,),
+            "station_lon": (n_station,),
+            "station_lat": (n_station,),
+            "station_type": (n_station,),
+            "capacity_gw": (n_station,),
+            "activation_year": (n_station,),
+            "era5_lat_idx": (n_station, 4),
+            "era5_lon_idx": (n_station, 4),
+            "era5_lat": (n_station, 4),
+            "era5_lon": (n_station, 4),
+            "weight": (n_station, 4),
+            "cf": (len(times), n_station),
+        }
+        for name, expected_shape in required_shapes.items():
+            data = _require_dataset(f, name)
+            if tuple(data.shape) != expected_shape:
+                raise ValueError(
+                    f"变量 {name} 形状不兼容：期望 {expected_shape}，实际 {tuple(data.shape)}"
+                )
+
+        if not np.array_equal(f["time"][:].astype(np.int64), _time_seconds(times)):
+            raise ValueError("time 坐标与当前 ERA5Land 月文件不一致")
+        np.testing.assert_allclose(
+            f["station_lon"][:].astype(np.float64),
+            stations["lon"].to_numpy(np.float64),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            f["station_lat"][:].astype(np.float64),
+            stations["lat"].to_numpy(np.float64),
+            atol=1e-6,
+        )
+        expected_type = np.full(n_station, _station_type_code(tech), dtype=np.int8)
+        if not np.array_equal(f["station_type"][:].astype(np.int8), expected_type):
+            raise ValueError("station_type 与当前场站不一致")
+        if not np.array_equal(f["era5_lat_idx"][:].astype(np.int64), match.lat_idx):
+            raise ValueError("era5_lat_idx 与当前场站匹配不一致")
+        if not np.array_equal(f["era5_lon_idx"][:].astype(np.int64), match.lon_idx):
+            raise ValueError("era5_lon_idx 与当前场站匹配不一致")
+        np.testing.assert_allclose(
+            f["weight"][:].astype(np.float32),
+            match.weights.astype(np.float32),
+            atol=1e-6,
+        )
+        weight_sum = f["weight"][:].astype(np.float32).sum(axis=1)
+        if not np.allclose(weight_sum, 1.0, atol=1e-5):
+            raise ValueError("缓存 weight 权重和不等于 1")
+
+
+def _create_station_cf_cache_output(
+    path: Path,
+    *,
+    scenario: str,
+    tech: str,
+    stations: pd.DataFrame,
+    match: cf_low_resource.FourPointMatch,
+    times: pd.DatetimeIndex,
+    files: list[Path],
+    baseline_years: str,
+    baseline_effective: str,
+    threshold_interp: str,
+    interpolation_method: str,
+    corner_order: str,
+    compress_level: int,
+) -> netCDF4.Dataset:
+    """创建场站 CF 缓存文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds = netCDF4.Dataset(path, "w", format="NETCDF4")
+    n_time = len(times)
+    n_station = len(stations)
+    ds.createDimension("time", n_time)
+    ds.createDimension("station", n_station)
+    ds.createDimension("corner", 4)
+
+    time_v = ds.createVariable("time", "i8", ("time",))
+    station_v = ds.createVariable("station", "i4", ("station",))
+    corner_v = ds.createVariable("corner", "i1", ("corner",))
+    time_v[:] = _time_seconds(times)
+    time_v.units = "seconds since 1970-01-01"
+    station_v[:] = np.arange(n_station, dtype=np.int32)
+    corner_v[:] = np.arange(4, dtype=np.int8)
+
+    lon = ds.createVariable("station_lon", "f4", ("station",), zlib=True,
+                            complevel=compress_level)
+    lat = ds.createVariable("station_lat", "f4", ("station",), zlib=True,
+                            complevel=compress_level)
+    stype = ds.createVariable("station_type", "i1", ("station",), zlib=True,
+                              complevel=compress_level)
+    capacity = ds.createVariable("capacity_gw", "f4", ("station",), zlib=True,
+                                 complevel=compress_level)
+    activation = ds.createVariable("activation_year", "i2", ("station",), zlib=True,
+                                   complevel=compress_level)
+    era5_lat_idx = ds.createVariable("era5_lat_idx", "i4", ("station", "corner"),
+                                     zlib=True, complevel=compress_level)
+    era5_lon_idx = ds.createVariable("era5_lon_idx", "i4", ("station", "corner"),
+                                     zlib=True, complevel=compress_level)
+    era5_lat = ds.createVariable("era5_lat", "f4", ("station", "corner"),
+                                 zlib=True, complevel=compress_level)
+    era5_lon = ds.createVariable("era5_lon", "f4", ("station", "corner"),
+                                 zlib=True, complevel=compress_level)
+    weight = ds.createVariable("weight", "f4", ("station", "corner"),
+                               zlib=True, complevel=compress_level)
+
+    cache_time_chunk = min(744, max(1, n_time))
+    cache_station_chunk = min(1024, max(1, n_station))
+    cf = ds.createVariable(
+        "cf", "f4", ("time", "station"),
+        zlib=True, complevel=compress_level, fill_value=np.float32(np.nan),
+        chunksizes=(cache_time_chunk, cache_station_chunk),
+    )
+    cf.units = "1"
+    cf.long_name = "ERA5Land 场站容量因子缓存"
+
+    lon[:] = stations["lon"].to_numpy(np.float32)
+    lat[:] = stations["lat"].to_numpy(np.float32)
+    stype[:] = np.full(n_station, _station_type_code(tech), dtype=np.int8)
+    capacity[:] = stations["capacity_gw"].to_numpy(np.float32)
+    activation[:] = stations["activation_year"].to_numpy(np.int16)
+    era5_lat_idx[:, :] = match.lat_idx.astype(np.int32)
+    era5_lon_idx[:, :] = match.lon_idx.astype(np.int32)
+    era5_lat[:, :] = match.corner_lat.astype(np.float32)
+    era5_lon[:, :] = match.corner_lon.astype(np.float32)
+    weight[:, :] = match.weights.astype(np.float32)
+
+    ds.cache_kind = "era5land_station_cf"
+    ds.scenario = scenario
+    ds.tech = tech
+    ds.baseline_years = baseline_years
+    ds.baseline_years_effective = baseline_effective
+    ds.threshold_interp = threshold_interp
+    ds.interpolation_method = interpolation_method
+    ds.corner_order = corner_order
+    ds.resource_variable = full_precompute.era5land_cf_var(tech)
+    ds.source_files = _source_files_attr(files)
+    ds.created_by = "scripts/precompute_station_low_resource_thresholds.py"
+    return ds
+
+
+def _gather_station_cf_from_slab(
+    slab: np.ndarray,
+    match: cf_low_resource.FourPointMatch,
+) -> np.ndarray:
+    """从一个原生时间 chunk 的全球 CF 中抽取场站 CF。"""
+    n_station = match.lat_idx.shape[0]
+    out = np.zeros((slab.shape[0], n_station), dtype=np.float32)
+    for corner in range(4):
+        corner_weight = match.weights[:, corner].astype(np.float32)
+        if not np.any(corner_weight != 0.0):
+            continue
+        values = slab[:, match.lat_idx[:, corner], match.lon_idx[:, corner]]
+        out += values.astype(np.float32, copy=False) * corner_weight[None, :]
+    return out
+
+
+def _build_station_cf_cache(
+    path: Path,
+    *,
+    args,
+    scenario: str,
+    tech: str,
+    stations: pd.DataFrame,
+    match: cf_low_resource.FourPointMatch,
+    files: list[Path],
+    lat: np.ndarray,
+    lon: np.ndarray,
+    times: pd.DatetimeIndex,
+    baseline_effective: str,
+    interpolation_method: str,
+    corner_order: str,
+) -> None:
+    """按 ERA5Land HDF5 原生 chunk 生成场站 CF 缓存。"""
+    tmp_path = _temporary_output_path(path)
+    if tmp_path.exists():
+        tmp_path.unlink()
+    ds: netCDF4.Dataset | None = None
+    try:
+        ds = _create_station_cf_cache_output(
+            tmp_path,
+            scenario=scenario,
+            tech=tech,
+            stations=stations,
+            match=match,
+            times=times,
+            files=files,
+            baseline_years=args.baseline_years,
+            baseline_effective=baseline_effective,
+            threshold_interp=args.threshold_interp,
+            interpolation_method=interpolation_method,
+            corner_order=corner_order,
+            compress_level=_station_cf_cache_compress_level(args),
+        )
+        out = ds["cf"]
+        var_name = full_precompute.era5land_cf_var(tech)
+        global_t0 = 0
+        requested_chunk = _cache_time_chunk_arg(args)
+        for month_idx, month_path in enumerate(files, start=1):
+            with cf_low_resource.open_h5(month_path, "r") as f:
+                month_times = cf_low_resource.read_time(f)
+                d = f[var_name]
+                if d.shape[1] != lat.size or d.shape[2] != lon.size:
+                    raise ValueError(
+                        f"{month_path}: CF 变量形状与 lat/lon 不一致：{tuple(d.shape)}"
+                    )
+                native_chunk = int(d.chunks[0]) if d.chunks else int(d.shape[0])
+                time_chunk = requested_chunk or native_chunk
+                if time_chunk < 1:
+                    raise ValueError("--cache_time_chunk 必须为正整数")
+                if requested_chunk is not None and requested_chunk < native_chunk:
+                    logger.warning(
+                        "[%s/%s] cache_time_chunk=%d 小于原生 chunk=%d，可能重复解压：%s",
+                        scenario, tech, requested_chunk, native_chunk, month_path,
+                    )
+                for t0 in range(0, int(d.shape[0]), time_chunk):
+                    t1 = min(t0 + time_chunk, int(d.shape[0]))
+                    slab = d[t0:t1, :, :].astype(np.float32, copy=False)
+                    out[global_t0 + t0:global_t0 + t1, :] = _gather_station_cf_from_slab(
+                        slab,
+                        match,
+                    )
+            logger.info(
+                "[%s/%s] 场站 CF 缓存写入月文件 %d/%d：%s，time=%d:%d",
+                scenario, tech, month_idx, len(files), month_path,
+                global_t0, global_t0 + len(month_times),
+            )
+            global_t0 += len(month_times)
+        if global_t0 != len(times):
+            raise ValueError(f"缓存写入时间长度不一致：写入 {global_t0}，期望 {len(times)}")
+    except Exception:
+        _close_dataset(ds)
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    finally:
+        _close_dataset(ds)
+    try:
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
+def load_or_build_station_cf_cache(
+    args,
+    *,
+    scenario: str,
+    tech: str,
+    stations: pd.DataFrame,
+    match: cf_low_resource.FourPointMatch,
+    files: list[Path],
+    lat: np.ndarray,
+    lon: np.ndarray,
+    baseline_effective: str,
+    interpolation_method: str,
+    corner_order: str,
+) -> StationCfCache:
+    """读取可用场站 CF 缓存；不存在或不兼容时重新生成。"""
+    path = _station_cf_cache_path(
+        args,
+        scenario=scenario,
+        tech=tech,
+        threshold_interp=args.threshold_interp,
+    )
+    times = _read_all_times(files)
+    full_precompute.validate_time_axis(times, args.allow_incomplete)
+    if path.exists() and not _overwrite_station_cf_cache(args):
+        try:
+            _validate_station_cf_cache(
+                path,
+                scenario=scenario,
+                tech=tech,
+                stations=stations,
+                match=match,
+                times=times,
+                files=files,
+                baseline_years=args.baseline_years,
+                baseline_effective=baseline_effective,
+                threshold_interp=args.threshold_interp,
+                interpolation_method=interpolation_method,
+            )
+            logger.info("[%s/%s] 复用场站 CF 缓存：%s", scenario, tech, path)
+            return StationCfCache(path=path, times=times)
+        except Exception as exc:
+            logger.warning("[%s/%s] 场站 CF 缓存不可复用，将重建：%s；原因：%s",
+                           scenario, tech, path, exc)
+    elif path.exists():
+        logger.info("[%s/%s] 按参数重新生成场站 CF 缓存：%s", scenario, tech, path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "[%s/%s] 开始生成场站 CF 缓存：场站=%d，月文件=%d，输出=%s",
+        scenario, tech, len(stations), len(files), path,
+    )
+    _build_station_cf_cache(
+        path,
+        args=args,
+        scenario=scenario,
+        tech=tech,
+        stations=stations,
+        match=match,
+        files=files,
+        lat=lat,
+        lon=lon,
+        times=times,
+        baseline_effective=baseline_effective,
+        interpolation_method=interpolation_method,
+        corner_order=corner_order,
+    )
+    _validate_station_cf_cache(
+        path,
+        scenario=scenario,
+        tech=tech,
+        stations=stations,
+        match=match,
+        times=times,
+        files=files,
+        baseline_years=args.baseline_years,
+        baseline_effective=baseline_effective,
+        threshold_interp=args.threshold_interp,
+        interpolation_method=interpolation_method,
+    )
+    logger.info("[%s/%s] 场站 CF 缓存生成完成：%s", scenario, tech, path)
+    return StationCfCache(path=path, times=times)
+
+
+def iter_thresholds_from_station_cf_cache(
+    cache: StationCfCache,
+    *,
+    station_chunk: int,
+    allow_incomplete: bool,
+):
+    """从场站 CF 缓存按 station chunk 计算阈值。"""
+    with cf_low_resource.open_h5(cache.path, "r") as f:
+        times = cf_low_resource.read_time(f)
+        full_precompute.validate_time_axis(times, allow_incomplete)
+        cf = f["cf"]
+        n_station = int(cf.shape[1])
+        for c0 in range(0, n_station, station_chunk):
+            c1 = min(c0 + station_chunk, n_station)
+            block = cf[:, c0:c1].astype(np.float32)
+            clim, threshold, valid_count = full_precompute.compute_threshold_block(block, times)
+            yield c0, c1, clim, threshold, valid_count
+
+
 def create_sparse_output(
     path: Path,
     *,
@@ -550,6 +1024,8 @@ def create_sparse_output(
     reuse_source_file: Path | None,
     reuse_station_count: int,
     computed_station_count: int,
+    station_cf_cache_enabled: bool,
+    station_cf_cache_file: Path | None,
     compress_level: int,
 ) -> netCDF4.Dataset:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,6 +1115,8 @@ def create_sparse_output(
     ds.reuse_station_count = str(int(reuse_station_count))
     ds.computed_station_count = str(int(computed_station_count))
     ds.reuse_key = "lon,lat,type"
+    ds.station_cf_cache_enabled = "true" if station_cf_cache_enabled else "false"
+    ds.station_cf_cache_file = "" if station_cf_cache_file is None else str(station_cf_cache_file)
     ds.created_by = "scripts/precompute_station_low_resource_thresholds.py"
     return ds
 
@@ -731,6 +1209,25 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
     if not np.allclose(weight_sum, 1.0, atol=1e-5):
         raise ValueError("场站匹配权重和不等于 1")
 
+    compute_cache: StationCfCache | None = None
+    if compute_idx.size and compute_match is not None:
+        if _no_station_cf_cache(args):
+            logger.info("[%s/%s] 已关闭场站 CF 缓存，使用旧的直接读取路径", scenario, tech)
+        else:
+            compute_cache = load_or_build_station_cf_cache(
+                args,
+                scenario=scenario,
+                tech=tech,
+                stations=stations.iloc[compute_idx].reset_index(drop=True),
+                match=compute_match,
+                files=files,
+                lat=lat,
+                lon=lon,
+                baseline_effective=baseline_effective,
+                interpolation_method=interpolation_method,
+                corner_order=corner_order,
+            )
+
     tmp_path = _temporary_output_path(out_path)
     if tmp_path.exists():
         tmp_path.unlink()
@@ -754,6 +1251,8 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
             if reuse_source is not None and reuse_target_idx.size else None,
             reuse_station_count=int(reuse_target_idx.size),
             computed_station_count=int(compute_idx.size),
+            station_cf_cache_enabled=compute_cache is not None,
+            station_cf_cache_file=compute_cache.path if compute_cache is not None else None,
             compress_level=args.compress_level,
         )
         if reuse_source is not None and reuse_target_idx.size:
@@ -763,21 +1262,37 @@ def process_tech(args, scenario: str, tech: str) -> Path | None:
                 scenario, tech, reuse_target_idx.size,
             )
 
-        first_time: pd.DatetimeIndex | None = None
         if compute_idx.size and compute_match is not None:
-            for c0 in range(0, compute_idx.size, args.station_chunk):
-                c1 = min(c0 + args.station_chunk, compute_idx.size)
-                times, block = load_station_block(files, tech, compute_match, slice(c0, c1))
-                if first_time is None:
-                    full_precompute.validate_time_axis(times, args.allow_incomplete)
-                    first_time = times
-                clim, threshold, valid_count = full_precompute.compute_threshold_block(block, times)
-                target_idx = compute_idx[c0:c1]
-                _write_computed_values(ds, target_idx, clim, threshold, valid_count)
-                logger.info(
-                    "[%s/%s] 新计算写入 station %d:%d",
-                    scenario, tech, int(target_idx[0]), int(target_idx[-1]) + 1,
-                )
+            if compute_cache is not None:
+                for c0, c1, clim, threshold, valid_count in iter_thresholds_from_station_cf_cache(
+                    compute_cache,
+                    station_chunk=args.station_chunk,
+                    allow_incomplete=args.allow_incomplete,
+                ):
+                    target_idx = compute_idx[c0:c1]
+                    _write_computed_values(ds, target_idx, clim, threshold, valid_count)
+                    logger.info(
+                        "[%s/%s] 从场站 CF 缓存写入 station %d:%d",
+                        scenario, tech, int(target_idx[0]), int(target_idx[-1]) + 1,
+                    )
+            else:
+                first_time: pd.DatetimeIndex | None = None
+                for c0 in range(0, compute_idx.size, args.station_chunk):
+                    c1 = min(c0 + args.station_chunk, compute_idx.size)
+                    times, block = load_station_block(files, tech, compute_match, slice(c0, c1))
+                    if first_time is None:
+                        full_precompute.validate_time_axis(times, args.allow_incomplete)
+                        first_time = times
+                    clim, threshold, valid_count = full_precompute.compute_threshold_block(
+                        block,
+                        times,
+                    )
+                    target_idx = compute_idx[c0:c1]
+                    _write_computed_values(ds, target_idx, clim, threshold, valid_count)
+                    logger.info(
+                        "[%s/%s] 直接读取 ERA5Land 写入 station %d:%d",
+                        scenario, tech, int(target_idx[0]), int(target_idx[-1]) + 1,
+                    )
     except Exception:
         _close_dataset(ds)
         if tmp_path.exists():
@@ -799,6 +1314,10 @@ def main() -> None:
     setup_logging("precompute_station_low_resource_thresholds")
     if args.station_chunk < 1:
         raise ValueError("--station_chunk 必须为正整数")
+    if args.cache_time_chunk is not None and args.cache_time_chunk < 1:
+        raise ValueError("--cache_time_chunk 必须为正整数")
+    if args.station_cf_cache_compress_level < 0:
+        raise ValueError("--station_cf_cache_compress_level 不能为负数")
     scenario = args.scenario or sm.infer_scenario_from_csv(args.stations_csv)
     techs = ["wind", "solar"] if args.tech == "both" else [args.tech]
     for tech in techs:

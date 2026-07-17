@@ -19,6 +19,7 @@ def _write_cf(
     *,
     lat: np.ndarray | None = None,
     lon: np.ndarray | None = None,
+    chunks: tuple[int, int, int] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     var = "solar_cf" if tech == "solar" else "wind_cf"
@@ -30,7 +31,7 @@ def _write_cf(
         d_time.attrs["units"] = np.bytes_("seconds since 1970-01-01")
         f.create_dataset("lat", data=lat_values)
         f.create_dataset("lon", data=lon_values)
-        f.create_dataset(var, data=values.astype(np.float32))
+        f.create_dataset(var, data=values.astype(np.float32), chunks=chunks)
 
 
 def _write_sparse_threshold(path: Path, tech: str, threshold_value: float) -> None:
@@ -195,6 +196,65 @@ def test_precompute_sparse_threshold_accepts_bilinear_option(tmp_path):
             f["weight"][0],
             np.array([0.5625, 0.1875, 0.1875, 0.0625], dtype=np.float32),
         )
+
+
+def test_precompute_sparse_threshold_reuses_station_cf_cache(tmp_path, monkeypatch):
+    cf_root = tmp_path / "data" / "cfs"
+    times = pd.date_range("2015-01-01", periods=48, freq="h")
+    values = np.full((48, 2, 2), np.nan, dtype=np.float32)
+    values[:, 1, 1] = np.arange(48, dtype=np.float32)
+    lat = np.array([40.0, 39.0], dtype=np.float32)
+    lon = np.array([116.0, 117.0], dtype=np.float32)
+    _write_cf(
+        cf_root / "CFs_of_wind_ERA5Land" / "wind_cf_2015_01.nc",
+        "wind",
+        times,
+        values,
+        lat=lat,
+        lon=lon,
+        chunks=(24, 2, 2),
+    )
+    stations_csv = tmp_path / "stations.csv"
+    stations_csv.write_text(
+        "year,type,lon,lat,capacity_gw\n"
+        "2030,wind,116.9,39.1,1.5\n",
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        cf_root=str(cf_root),
+        stations_csv=str(stations_csv),
+        output_dir=str(tmp_path / "thresholds"),
+        baseline_years="2015",
+        threshold_interp="nearest_valid",
+        station_chunk=2,
+        compress_level=1,
+        allow_incomplete=True,
+        overwrite=False,
+        dry_run=False,
+        no_station_cf_cache=False,
+        overwrite_station_cf_cache=False,
+    )
+
+    sparse_precompute.process_tech(args, "ssp126", "wind")
+    cache_path = sparse_precompute._station_cf_cache_path(
+        args,
+        scenario="ssp126",
+        tech="wind",
+        threshold_interp="nearest_valid",
+    )
+
+    assert cache_path.exists()
+    with h5py.File(cache_path, "r") as f:
+        assert cf_low_resource.decode_attr(f.attrs["cache_kind"]) == "era5land_station_cf"
+        assert f["cf"].shape == (48, 1)
+        np.testing.assert_allclose(f["cf"][:, 0], values[:, 1, 1])
+
+    def fail_rebuild(*args, **kwargs):
+        raise AssertionError("不应重建已有完整场站 CF 缓存")
+
+    monkeypatch.setattr(sparse_precompute, "_build_station_cf_cache", fail_rebuild)
+    args.overwrite = True
+    sparse_precompute.process_tech(args, "ssp126", "wind")
 
 
 def test_station_low_resource_uses_sparse_threshold(tmp_path):
