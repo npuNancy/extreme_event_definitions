@@ -75,16 +75,7 @@ Slurm 脚本：已生成，但旧脚本仍使用错误的 /data/cfs；修正生�
 共享 venv：step1 入口依赖已安装并通过导入检查
 ```
 
-wind 数据位于 `~/data/cfs/CFs_of_wind_ERA5Land`。当前共发现 124 个 `wind_cf_*.nc`，其中2015-2024基准期为116/120，缺少：
-
-```text
-2015-11
-2018-06
-2019-08
-2022-06
-```
-
-缺失月份补齐前不提交 wind E2a 作业。
+wind 数据位于 `~/data/cfs/CFs_of_wind_ERA5Land`。当前共发现 132 个 `wind_cf_*.nc`，其中2015-2024基准期120个月完整。
 
 ### 3.2 scnet-kunshan-199
 
