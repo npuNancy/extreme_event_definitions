@@ -226,6 +226,8 @@ def test_e3_writes_three_scenario_threshold_files(tmp_path):
         output_dir=str(tmp_path / "thresholds"),
         station_chunk=1,
         compress_level=1,
+        scenarios="ssp126,ssp245,ssp585",
+        n_jobs=1,
         overwrite=False,
     )
 
@@ -342,6 +344,8 @@ def test_e3_handles_unsorted_positions(tmp_path):
         output_dir=str(tmp_path / "thresholds"),
         station_chunk=2,
         compress_level=1,
+        scenarios="ssp126,ssp245,ssp585",
+        n_jobs=1,
         overwrite=False,
     ))
 
@@ -353,3 +357,109 @@ def test_e3_handles_unsorted_positions(tmp_path):
     assert np.isfinite(thr245).all()
     # ssp245 scenario station j 取自 union order[j]，应等于 ssp126（union 顺序）对应位置
     np.testing.assert_allclose(thr245, thr126[np.array([3, 1, 0, 2])])
+
+
+def _build_multi_station_cache(cache_path, n_station=4, n_time=72):
+    """合成多 station union cache（wind），cf 编码 station 使各站阈值不同。"""
+    times = pd.date_range("2015-01-01", periods=n_time, freq="h")
+    ds = create_station_cache(cache_path, n_time=n_time, n_station=n_station, compress_level=1)
+    ds["time"][:] = times.to_numpy(dtype="datetime64[s]").astype(np.int64)
+    ds["union_station_index"][:] = np.arange(n_station)
+    ds["station_lon"][:] = [116.0 + i for i in range(n_station)]
+    ds["station_lat"][:] = [40.0 - 0.5 * i for i in range(n_station)]
+    ds["station_type"][:] = 1
+    ds["era5_lat_idx"][:] = [[0, 0, 0, 0]] * n_station
+    ds["era5_lon_idx"][:] = [[0, 0, 0, 0]] * n_station
+    ds["era5_lat"][:] = [[40.0 - 0.5 * i] * 4 for i in range(n_station)]
+    ds["era5_lon"][:] = [[116.0 + i] * 4 for i in range(n_station)]
+    ds["weight"][:] = [[1.0, 0.0, 0.0, 0.0]] * n_station
+    for s in range(n_station):
+        ds["cf"][:, s] = np.linspace(0.1 + 0.2 * s, 0.9 + 0.2 * s, n_time, dtype=np.float32)
+    ds.cache_kind = "era5land_union_station_cf"
+    ds.tech = "wind"
+    ds.baseline_years = "2015-2024"
+    ds.baseline_years_effective = "2015-2024"
+    ds.chunk_count = "21"
+    ds.interpolation_method = "nearest_valid"
+    ds.corner_order = "nearest_valid,unused,unused,unused"
+    ds.source_files = ""
+    ds.close()
+
+
+def _build_union_and_maps(tmp_path, order_by_scenario):
+    union_csv = tmp_path / "union.csv"
+    pd.DataFrame([
+        {"union_station_index": i, "lon": 116.0 + i, "lat": 40.0 - 0.5 * i, "type": "wind"}
+        for i in range(4)
+    ]).to_csv(union_csv, index=False)
+    map_paths = {}
+    for scenario, order in order_by_scenario.items():
+        path = tmp_path / f"map_{scenario}.csv"
+        rows = [
+            {"scenario_station_index": s, "union_station_index": u,
+             "lon": 116.0 + u, "lat": 40.0 - 0.5 * u, "type": "wind",
+             "activation_year": 2030, "capacity_gw": 1.0}
+            for s, u in enumerate(order)
+        ]
+        pd.DataFrame(rows).to_csv(path, index=False)
+        map_paths[scenario] = path
+    return union_csv, map_paths
+
+
+def test_e3_scenarios_single_matches_full(tmp_path):
+    """--scenarios 单 SSP 只输出该 SSP 文件，且数值与全量一致。"""
+    cache_path = tmp_path / "merged.nc"
+    _build_multi_station_cache(cache_path)
+    order_by_scenario = {"ssp126": [0, 1, 2, 3], "ssp245": [3, 1, 0, 2], "ssp585": [2, 0, 3, 1]}
+    union_csv, map_paths = _build_union_and_maps(tmp_path, order_by_scenario)
+    base = dict(
+        union_station_cf_cache=str(cache_path), union_stations_csv=str(union_csv),
+        index_map_ssp126=str(map_paths["ssp126"]), index_map_ssp245=str(map_paths["ssp245"]),
+        index_map_ssp585=str(map_paths["ssp585"]), tech="wind", baseline_years="2015-2024",
+        compress_level=1, overwrite=False, n_jobs=1,
+    )
+    full_dir = tmp_path / "full"
+    e3.run(Namespace(**base, scenarios="ssp126,ssp245,ssp585",
+                     output_dir=str(full_dir), station_chunk=2))
+    single_dir = tmp_path / "single"
+    e3.run(Namespace(**base, scenarios="ssp245",
+                     output_dir=str(single_dir), station_chunk=2))
+
+    # 单 ssp245 只产 ssp245，不产 ssp126/ssp585
+    assert cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        single_dir, "ssp245", "wind", "2015-2024").exists()
+    for s in ("ssp126", "ssp585"):
+        assert not cf_low_resource.sparse_threshold_file_for_scenario_tech(
+            single_dir, s, "wind", "2015-2024").exists()
+    # 数值与全量一致
+    full_p = cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        full_dir, "ssp245", "wind", "2015-2024")
+    single_p = cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        single_dir, "ssp245", "wind", "2015-2024")
+    with h5py.File(full_p, "r") as fa, h5py.File(single_p, "r") as fb:
+        np.testing.assert_allclose(fa["threshold"][:], fb["threshold"][:])
+        np.testing.assert_allclose(fa["clim"][:], fb["clim"][:])
+
+
+def test_e3_n_jobs_parallel_equivalence(tmp_path):
+    """--n_jobs=1 与 --n_jobs=4 输出数值一致（并行只改速度不改结果）。"""
+    cache_path = tmp_path / "merged.nc"
+    _build_multi_station_cache(cache_path)
+    order_by_scenario = {"ssp126": [0, 1, 2, 3], "ssp245": [3, 1, 0, 2], "ssp585": [2, 0, 3, 1]}
+    union_csv, map_paths = _build_union_and_maps(tmp_path, order_by_scenario)
+    base = dict(
+        union_station_cf_cache=str(cache_path), union_stations_csv=str(union_csv),
+        index_map_ssp126=str(map_paths["ssp126"]), index_map_ssp245=str(map_paths["ssp245"]),
+        index_map_ssp585=str(map_paths["ssp585"]), tech="wind", baseline_years="2015-2024",
+        compress_level=1, overwrite=False, scenarios="ssp245", station_chunk=2,
+    )
+    out1 = tmp_path / "j1"
+    e3.run(Namespace(**base, output_dir=str(out1), n_jobs=1))
+    out4 = tmp_path / "j4"
+    e3.run(Namespace(**base, output_dir=str(out4), n_jobs=4))
+
+    p1 = cf_low_resource.sparse_threshold_file_for_scenario_tech(out1, "ssp245", "wind", "2015-2024")
+    p4 = cf_low_resource.sparse_threshold_file_for_scenario_tech(out4, "ssp245", "wind", "2015-2024")
+    with h5py.File(p1, "r") as fa, h5py.File(p4, "r") as fb:
+        np.testing.assert_allclose(fa["threshold"][:], fb["threshold"][:])
+        np.testing.assert_allclose(fa["clim"][:], fb["clim"][:])

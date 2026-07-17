@@ -35,6 +35,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--station_chunk", type=int, default=128)
     parser.add_argument("--compress_level", type=int, default=4)
+    parser.add_argument(
+        "--scenarios",
+        default=",".join(SCENARIOS),
+        help="只计算指定 SSP（逗号分隔），默认全部三个",
+    )
+    parser.add_argument(
+        "--n_jobs",
+        type=int,
+        default=1,
+        help="chunk 级并行进程数，需 ≤ Slurm -n；默认 1（串行）",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -55,6 +66,28 @@ def _match_from_cache(handle, positions: np.ndarray) -> cf_low_resource.FourPoin
     )
 
 
+_WORKER_TIMES: pd.DatetimeIndex | None = None
+
+
+def _compute_chunk(cache_path, chunk_positions):
+    """单个 station chunk 的阈值计算（worker 函数，顶层定义以便 pickle）。
+
+    串行与并行共用，保证两条路径结果一致。worker 自开 cache 只读句柄，避免把
+    ~45MB 的 block 在进程间 pickle；times 在每个 worker 进程内首次读取并缓存。
+    """
+    global _WORKER_TIMES
+    chunk_positions = np.asarray(chunk_positions)
+    with cf_low_resource.open_h5(cache_path, "r") as handle:
+        if _WORKER_TIMES is None:
+            _WORKER_TIMES = cf_low_resource.read_time(handle)
+        # h5py fancy indexing 要求索引递增；排序读取后恢复原 chunk 顺序。
+        order = np.argsort(chunk_positions, kind="stable")
+        inv = np.empty(order.shape, dtype=np.int64)
+        inv[order] = np.arange(order.size)
+        block = handle["cf"][:, chunk_positions[order]].astype(np.float32)[:, inv]
+    return full_precompute.compute_threshold_block(block, _WORKER_TIMES)
+
+
 def _scenario_output(args: argparse.Namespace, scenario: str) -> Path:
     return cf_low_resource.sparse_threshold_file_for_scenario_tech(
         args.output_dir, scenario, args.tech, args.baseline_years
@@ -62,11 +95,19 @@ def _scenario_output(args: argparse.Namespace, scenario: str) -> Path:
 
 
 def run(args: argparse.Namespace) -> list[Path]:
+    global _WORKER_TIMES
+    _WORKER_TIMES = None  # 每次 run 重置，避免跨调用/跨测试复用旧 cache 的 times
     if args.baseline_years != BASELINE_YEARS:
         raise ValueError(f"超算 step1 基准期固定为 {BASELINE_YEARS}")
     if args.station_chunk < 1:
         raise ValueError("--station_chunk 必须为正整数")
-    outputs = [_scenario_output(args, scenario) for scenario in SCENARIOS]
+    if args.n_jobs < 1:
+        raise ValueError("--n_jobs 必须为正整数")
+    selected = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+    unknown = [s for s in selected if s not in SCENARIOS]
+    if unknown:
+        raise ValueError(f"不支持的 scenario: {unknown}，可选: {SCENARIOS}")
+    outputs = [_scenario_output(args, scenario) for scenario in selected]
     existing = [path for path in outputs if path.exists()]
     if existing and not args.overwrite:
         raise FileExistsError(f"E3 输出已存在；确认后传 --overwrite：{existing[0]}")
@@ -103,7 +144,8 @@ def run(args: argparse.Namespace) -> list[Path]:
             raise ValueError("union cache 含并集场站表中不存在的索引")
 
         try:
-            for scenario, map_path in map_paths.items():
+            for scenario in selected:
+                map_path = map_paths[scenario]
                 mapping = pd.read_csv(map_path)
                 mapping = (
                     mapping[mapping["type"] == args.tech]
@@ -157,17 +199,29 @@ def run(args: argparse.Namespace) -> list[Path]:
                         station_cf_cache_file=cache_path,
                         compress_level=args.compress_level,
                     )
-                    for c0 in range(0, len(stations), args.station_chunk):
-                        c1 = min(c0 + args.station_chunk, len(stations))
-                        chunk_pos = positions[c0:c1]
-                        # h5py fancy indexing 要求索引递增；排序读取后恢复原 chunk 顺序。
-                        chunk_order = np.argsort(chunk_pos, kind="stable")
-                        chunk_inv = np.empty(chunk_order.shape, dtype=np.int64)
-                        chunk_inv[chunk_order] = np.arange(chunk_order.size)
-                        block = cache["cf"][:, chunk_pos[chunk_order]].astype(np.float32)[:, chunk_inv]
-                        clim, threshold, valid_count = full_precompute.compute_threshold_block(
-                            block, times
-                        )
+                    chunk_ranges = [
+                        (c0, min(c0 + args.station_chunk, len(stations)))
+                        for c0 in range(0, len(stations), args.station_chunk)
+                    ]
+                    cache_path_str = str(cache_path)
+                    chunk_positions_list = [positions[c0:c1] for c0, c1 in chunk_ranges]
+                    if args.n_jobs <= 1:
+                        results = [
+                            _compute_chunk(cache_path_str, cp)
+                            for cp in chunk_positions_list
+                        ]
+                    else:
+                        from concurrent.futures import ProcessPoolExecutor
+
+                        n = len(chunk_positions_list)
+                        with ProcessPoolExecutor(max_workers=args.n_jobs) as ex:
+                            results = list(ex.map(
+                                _compute_chunk,
+                                [cache_path_str] * n,
+                                chunk_positions_list,
+                                chunksize=max(1, n // (args.n_jobs * 8)),
+                            ))
+                    for (c0, c1), (clim, threshold, valid_count) in zip(chunk_ranges, results):
                         if not np.all(np.isfinite(threshold)):
                             raise ValueError(f"{scenario}: threshold 含 NaN 或 Inf")
                         if not np.all(valid_count > 0):

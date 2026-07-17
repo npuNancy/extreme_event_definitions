@@ -39,6 +39,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--e2a-time", default="24:00:00")
     parser.add_argument("--e2b-time", default="08:00:00")
     parser.add_argument("--e3-time", default="08:00:00")
+    parser.add_argument(
+        "--e3_parallel",
+        action="store_true",
+        help="生成按 SSP 拆分的多核 E3 作业（默认 10 核），与旧 E3 脚本区分",
+    )
+    parser.add_argument(
+        "--e3_kernel_num",
+        type=int,
+        default=10,
+        help="E3 并行作业核数，同时用于 Slurm -n 和 E3 --n_jobs",
+    )
+    parser.add_argument(
+        "--e3_output_suffix",
+        default="parallel",
+        help="E3 并行作业输出目录后缀（须与旧 E3 目录不同）",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -188,8 +204,75 @@ def run(args: argparse.Namespace) -> Path:
     return jobs_dir
 
 
+def run_e3_parallel(args: argparse.Namespace) -> Path:
+    """生成按 SSP 拆分的多核 E3 作业（文件名/输出目录均与旧 E3 区分）。"""
+    if args.e3_kernel_num < 1:
+        raise ValueError("--e3_kernel_num 必须为正整数")
+    config = SERVER_CONFIG[args.server]
+    tech = config["tech"]
+    project = Path(config["project_dir"])
+    jobs_dir = project / "jobs/step1_low_resource"
+    union_dir = project / "outputs/cache/era5land_union_station_cf/union_stations"
+    merged = (
+        f"{project}/outputs/cache/era5land_union_station_cf/merged_cache/"
+        f"station_cf_union_{tech}_ERA5Land_2015-2024_nearest_valid.nc"
+    )
+    output_dir = (
+        f"{project}/outputs/low_resource_thresholds/"
+        f"sparse_station_ERA5Land_2015-2024_{args.e3_output_suffix}"
+    )
+    common = {
+        "project_dir": str(project),
+        "activate": config["activate"],
+        "kernel_num": args.e3_kernel_num,
+        "partition": args.partition or config.get("partition"),
+    }
+    scripts: list[Path] = []
+    for scenario in ("ssp126", "ssp245", "ssp585"):
+        job_name = f"step1_E3_{tech}_{scenario}"
+        script = jobs_dir / f"job_{job_name}.sh"
+        command = (
+            "python step1_split_E3_thresholds_from_union_cache.py "
+            f"--union_station_cf_cache {merged} "
+            f"--union_stations_csv {union_dir}/stations_union_ssp126_ssp245_ssp585.csv "
+            f"--index_map_ssp126 {union_dir}/station_index_map_ssp126.csv "
+            f"--index_map_ssp245 {union_dir}/station_index_map_ssp245.csv "
+            f"--index_map_ssp585 {union_dir}/station_index_map_ssp585.csv "
+            f"--tech {tech} --baseline_years 2015-2024 "
+            f"--scenarios {scenario} --n_jobs {args.e3_kernel_num} "
+            f"--output_dir {output_dir}"
+        )
+        _write(
+            script,
+            _slurm_script(
+                job_name=job_name, command=command, time_limit=args.e3_time, **common
+            ),
+            force=args.force,
+            dry_run=args.dry_run,
+        )
+        scripts.append(script)
+    submit = "#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(
+        f"sbatch --parsable {path}" for path in scripts
+    ) + "\n"
+    _write(
+        jobs_dir / f"submit_step1_E3_parallel_{tech}.sh",
+        submit,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
+    print(
+        f"已生成 {tech}：3 个 E3 并行作业（{args.e3_kernel_num} 核，"
+        f"输出 sparse_station_ERA5Land_2015-2024_{args.e3_output_suffix}）"
+    )
+    return jobs_dir
+
+
 def main() -> None:
-    run(build_parser().parse_args())
+    args = build_parser().parse_args()
+    if args.e3_parallel:
+        run_e3_parallel(args)
+    else:
+        run(args)
 
 
 if __name__ == "__main__":
