@@ -18,12 +18,14 @@ SERVER_CONFIG = {
         "user": "acbw9wpn5k",
         "project_dir": "/public/home/acbw9wpn5k/extreme_event_definitions",
         "activate": "/public/home/acbw9wpn5k/.venv/bin/activate",
+        "partition": "kshctest02",
     },
     "scnet-kunshan-199": {
         "tech": "solar",
         "user": "aclym5felp",
         "project_dir": "/public/home/aclym5felp/extreme_event_definitions",
         "activate": "/public/home/acbw9wpn5k/.venv/bin/activate",
+        "partition": "kshctest02",
     },
 }
 
@@ -95,7 +97,7 @@ def run(args: argparse.Namespace) -> Path:
         "project_dir": str(project),
         "activate": config["activate"],
         "kernel_num": args.kernel_num,
-        "partition": args.partition,
+        "partition": args.partition or config.get("partition"),
     }
     e2a_scripts: list[tuple[bool, Path]] = []
     for row in plan.itertuples(index=False):
