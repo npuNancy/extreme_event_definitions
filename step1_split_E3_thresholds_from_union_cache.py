@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""步骤 E3：从完整 union cache 计算三个 SSP 稀疏阈值。"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+from pathlib import Path
+
+import netCDF4
+import numpy as np
+import pandas as pd
+
+from grid_extreme_signals import cf_low_resource
+from scripts import precompute_low_resource_thresholds as full_precompute
+from scripts import precompute_station_low_resource_thresholds as sparse_precompute
+from scripts.hpc_step1_common import BASELINE_YEARS, SCENARIOS, atomic_path, decode_attrs
+from tools.logging_utils import setup_entry_logging
+
+logger = logging.getLogger("step1_split_E3")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="从 union station CF cache 计算 SSP 阈值。")
+    parser.add_argument("--union_station_cf_cache", required=True)
+    parser.add_argument("--union_stations_csv", required=True)
+    parser.add_argument("--index_map_ssp126", required=True)
+    parser.add_argument("--index_map_ssp245", required=True)
+    parser.add_argument("--index_map_ssp585", required=True)
+    parser.add_argument("--tech", choices=["wind", "solar"], required=True)
+    parser.add_argument("--baseline_years", default=BASELINE_YEARS)
+    parser.add_argument(
+        "--output_dir",
+        default="outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024",
+    )
+    parser.add_argument("--station_chunk", type=int, default=128)
+    parser.add_argument("--compress_level", type=int, default=4)
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def _match_from_cache(handle, positions: np.ndarray) -> cf_low_resource.FourPointMatch:
+    return cf_low_resource.FourPointMatch(
+        lat_idx=handle["era5_lat_idx"][positions].astype(np.int64),
+        lon_idx=handle["era5_lon_idx"][positions].astype(np.int64),
+        weights=handle["weight"][positions].astype(np.float32),
+        corner_lat=handle["era5_lat"][positions].astype(np.float32),
+        corner_lon=handle["era5_lon"][positions].astype(np.float32),
+    )
+
+
+def _scenario_output(args: argparse.Namespace, scenario: str) -> Path:
+    return cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        args.output_dir, scenario, args.tech, args.baseline_years
+    )
+
+
+def run(args: argparse.Namespace) -> list[Path]:
+    if args.baseline_years != BASELINE_YEARS:
+        raise ValueError(f"超算 step1 基准期固定为 {BASELINE_YEARS}")
+    if args.station_chunk < 1:
+        raise ValueError("--station_chunk 必须为正整数")
+    outputs = [_scenario_output(args, scenario) for scenario in SCENARIOS]
+    existing = [path for path in outputs if path.exists()]
+    if existing and not args.overwrite:
+        raise FileExistsError(f"E3 输出已存在；确认后传 --overwrite：{existing[0]}")
+
+    map_paths = {
+        "ssp126": args.index_map_ssp126,
+        "ssp245": args.index_map_ssp245,
+        "ssp585": args.index_map_ssp585,
+    }
+    union = pd.read_csv(args.union_stations_csv)
+    union_keys = set(union["union_station_index"].astype(int))
+    cache_path = Path(args.union_station_cf_cache)
+    temp_outputs: list[Path] = []
+    with cf_low_resource.open_h5(cache_path, "r") as cache:
+        attrs = decode_attrs(cache)
+        expected_attrs = {
+            "cache_kind": "era5land_union_station_cf",
+            "tech": args.tech,
+            "baseline_years": BASELINE_YEARS,
+        }
+        for name, expected in expected_attrs.items():
+            if attrs.get(name) != expected:
+                raise ValueError(f"union cache 属性 {name} 不兼容")
+        if attrs.get("chunk_count") != "21":
+            raise ValueError("union cache 没有合并完整的21个 E2a 缓存块")
+        times = cf_low_resource.read_time(cache)
+        full_precompute.validate_time_axis(times, allow_incomplete=False)
+        cache_union_indices = cache["union_station_index"][:].astype(np.int64)
+        position_by_union = {
+            int(union_index): position
+            for position, union_index in enumerate(cache_union_indices)
+        }
+        if not set(position_by_union).issubset(union_keys):
+            raise ValueError("union cache 含并集场站表中不存在的索引")
+
+        try:
+            for scenario, map_path in map_paths.items():
+                mapping = pd.read_csv(map_path)
+                mapping = (
+                    mapping[mapping["type"] == args.tech]
+                    .sort_values("scenario_station_index")
+                    .reset_index(drop=True)
+                )
+                if mapping.empty:
+                    raise ValueError(f"{scenario} 没有 {args.tech} 场站")
+                try:
+                    positions = np.array(
+                        [position_by_union[int(value)] for value in mapping["union_station_index"]],
+                        dtype=np.int64,
+                    )
+                except KeyError as exc:
+                    raise ValueError(
+                        f"{scenario} 映射引用了当前技术缓存中不存在的 union index：{exc}"
+                    ) from exc
+                stations = mapping[
+                    ["lon", "lat", "type", "activation_year", "capacity_gw"]
+                ].copy()
+                match = _match_from_cache(cache, positions)
+                if not np.allclose(match.weights.sum(axis=1), 1.0, atol=1e-5):
+                    raise ValueError(f"{scenario}: weight 权重和不等于 1")
+                output = _scenario_output(args, scenario)
+                tmp = atomic_path(output)
+                if tmp.exists():
+                    tmp.unlink()
+                temp_outputs.append(tmp)
+                source_files = [
+                    Path(path) for path in attrs.get("source_files", "").split(",") if path
+                ]
+                ds: netCDF4.Dataset | None = None
+                try:
+                    ds = sparse_precompute.create_sparse_output(
+                        tmp,
+                        scenario=scenario,
+                        tech=args.tech,
+                        stations=stations,
+                        match=match,
+                        files=source_files,
+                        baseline_years=args.baseline_years,
+                        baseline_effective=BASELINE_YEARS,
+                        interpolation_method=attrs["interpolation_method"],
+                        corner_order=attrs.get("corner_order", ""),
+                        reuse_enabled=False,
+                        reuse_from_scenario=None,
+                        reuse_source_file=None,
+                        reuse_station_count=0,
+                        computed_station_count=len(stations),
+                        station_cf_cache_enabled=True,
+                        station_cf_cache_file=cache_path,
+                        compress_level=args.compress_level,
+                    )
+                    for c0 in range(0, len(stations), args.station_chunk):
+                        c1 = min(c0 + args.station_chunk, len(stations))
+                        block = cache["cf"][:, positions[c0:c1]].astype(np.float32)
+                        clim, threshold, valid_count = full_precompute.compute_threshold_block(
+                            block, times
+                        )
+                        if not np.all(np.isfinite(threshold)):
+                            raise ValueError(f"{scenario}: threshold 含 NaN 或 Inf")
+                        if not np.all(valid_count > 0):
+                            raise ValueError(f"{scenario}: valid_count 存在非正值")
+                        ds["clim"][:, :, c0:c1] = clim
+                        ds["threshold"][c0:c1] = threshold
+                        ds["valid_count"][c0:c1] = valid_count
+                        logger.info("[%s/%s] 已计算 station %d:%d", scenario, args.tech, c0, c1)
+                    ds.created_by = Path(__file__).name
+                    ds.union_station_cf_cache = str(cache_path)
+                    ds.close()
+                    ds = None
+                except Exception:
+                    if ds is not None:
+                        ds.close()
+                    raise
+            for tmp, output in zip(temp_outputs, outputs, strict=True):
+                os.replace(tmp, output)
+        except Exception:
+            for tmp in temp_outputs:
+                if tmp.exists():
+                    tmp.unlink()
+            raise
+    return outputs
+
+
+def main() -> None:
+    setup_entry_logging("step1_split_E3_thresholds_from_union_cache")
+    run(build_parser().parse_args())
+
+
+if __name__ == "__main__":
+    main()

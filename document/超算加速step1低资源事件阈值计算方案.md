@@ -1,533 +1,1204 @@
 # 超算加速 step1 低资源事件阈值计算方案
 
-## 1. 目标
+## 1. 文档状态
 
-当前 step1 的目标是使用 ERA5Land 2015-2025 年风电/光伏容量因子，为 SSP 场站计算稀疏低资源阈值。
+- 工作分支：`hpc-step1-low-resource-acceleration`
+- 当前阶段：先完善方案文档，随后实现昆山双服务器 step1 作业生成、运行、监控和核时统计代码。
+- 参考文档：
+  - `/data6/yanxiaokai/project_climate/bcsd/document/超算BCSD运行优化代码修改计划.md`
+  - `/data6/yanxiaokai/project_climate/bcsd/infos/goal.md`
+- 安全约束：不把网页密码、rayfile token、账号密码表写入 Git 文档、脚本、日志或提交信息。上传命令只能记录脱敏模板。
 
-已有本地加速计划是：
+## 2. 目标
 
-1. 按 ERA5Land CF 文件的 HDF5 原生 chunk 读取。
-2. 先生成场站 CF 缓存。
-3. 再从场站 CF 缓存计算 `clim(12,24,station)` 和 `threshold(station)`。
+使用昆山超算的两台服务器分别计算 step1 的 ERA5Land 低资源阈值：
 
-本方案是在超算 `scnet-wuzhen-185` 上进一步加速 step1，核心思路是：
+| 技术类型 | 服务器 | Host | 账号 | 输入数据 |
+|---|---|---|---|---|
+| wind | 昆山185 | `scnet-kunshan-185` | `acbw9wpn5k` | `/data/cfs/CFs_of_wind_ERA5Land` |
+| solar | 昆山199 | `scnet-kunshan-199` | `aclym5felp` | `/data/cfs/CFs_of_solar_ERA5Land` |
 
-1. 不在登录节点计算，只通过 Slurm 提交批处理任务。
-2. 把三个 SSP 的场站先合并成并集，避免重复读取全球 ERA5Land CF。
-3. 把 2015-2025 年的月文件拆成 Slurm array job 并行处理。
-4. 每个 array task 只生成一个月的场站 CF 缓存。
-5. 最后合并月度缓存，再分别为 ssp126/ssp245/ssp585 计算低资源阈值。
-
-## 2. 超算环境检查结果
-
-已确认 `scnet-wuzhen-185` 可以登录，且远端有 Slurm 环境。
+每台服务器只处理自己的技术类型，但都需要对三个 SSP 场站输出低资源阈值：
 
 ```text
-登录主机：login05
-用户：acbw9wpn5k
-可用调度命令：sbatch, srun, qsub, bsub
-Slurm 分区：wzhctest
-节点规格：
-  32 core / 约 126 GB 内存
-  64 core / 约 255 GB 内存
-共享文件系统：/work
+ssp126
+ssp245
+ssp585
 ```
-
-注意：
-
-1. 登录节点 `nproc=2`，不能直接运行正式 step1 计算。
-2. `/work` 可用空间充足，适合作为代码、输入数据、缓存和输出目录。
-3. 当前没有看到 `/data6`、当前项目目录或 ERA5Land CF 数据在超算侧可见，因此正式运行前需要先同步代码和数据。
-
-## 3. 当前瓶颈
-
-ERA5Land CF 文件的 HDF5 chunk 结构是：
-
-```text
-wind  chunks = (72, 1801, 3600), gzip
-solar chunks = (24, 1801, 3600), gzip
-```
-
-每个压缩 chunk 覆盖一段时间和完整全球空间网格。旧代码按场站点读取，例如：
-
-```python
-d[:, lat_i, unique_lon]
-```
-
-这会为了少量场站点反复解压巨大的全球 chunk，导致运行极慢。
-
-本地加速计划已经把读取方式改为按原生 chunk 读取：
-
-```python
-slab = d[t0:t1, :, :]
-station_cf = gather_station_cf_from_slab(slab, match)
-```
-
-超算侧进一步优化的是并行粒度：按月份拆分，而不是一个进程串行处理 132 个月。
-
-## 4. 推荐总体流程
-
-```text
-阶段 A0：同步代码和 ERA5Land CF 数据到 /work
-阶段 A1：生成 ssp126/ssp245/ssp585 场站并集表
-阶段 A2：Slurm array 并行生成月度场站 CF 缓存
-阶段 A3：合并月度场站 CF 缓存为完整场站 CF 缓存
-阶段 B1：按 SSP 子集从完整缓存计算低资源阈值
-阶段 B2：检查阈值文件完整性
-```
-
-推荐优先实现这个流程，而不是分别为每个 SSP 独立跑完整 step1。
-
-## 5. 数据和目录布局
-
-建议在超算 `/work` 下使用独立项目目录：
-
-```text
-/work/home/acbw9wpn5k/project_climate/extreme_event_definitions/
-```
-
-建议目录结构：
-
-```text
-data/
-  cfs/
-    CFs_of_wind_ERA5Land/
-    CFs_of_solar_ERA5Land/
-  stations/
-    stations_SSP1-2.6.csv
-    stations_SSP2-4.5.csv
-    stations_SSP5-6.0.csv
-
-outputs/
-  cache/
-    era5land_station_cf_hpc/
-      union_stations/
-      monthly/
-      merged/
-  low_resource_thresholds/
-
-logs/
-  slurm/
-  step1/
-```
-
-如果 ERA5Land CF 文件体积过大，不建议每次重新传输。更推荐：
-
-1. 一次性同步到 `/work`。
-2. 后续只同步代码和小文件。
-3. 使用 checksum 或文件数量检查确认数据完整。
-
-## 6. 阶段 A1：生成三个 SSP 的场站并集
-
-目标：把 ssp126、ssp245、ssp585 的场站按严格键合并。
-
-推荐严格键：
-
-```text
-(lon, lat, type)
-```
-
-输出文件建议：
-
-```text
-outputs/cache/era5land_station_cf_hpc/union_stations/
-  stations_union_ssp126_ssp245_ssp585.csv
-  stations_union_index_map_ssp126.csv
-  stations_union_index_map_ssp245.csv
-  stations_union_index_map_ssp585.csv
-```
-
-其中：
-
-1. `stations_union_ssp126_ssp245_ssp585.csv` 保存去重后的并集场站。
-2. `stations_union_index_map_<scenario>.csv` 保存当前 SSP 场站行号到并集场站行号的映射。
-
-这样后续只需要为并集场站生成一次 ERA5Land station CF 缓存。
-
-## 7. 阶段 A2：Slurm array 并行生成月度场站 CF 缓存
-
-### 7.1 并行粒度
-
-2015-2025 年共有：
-
-```text
-11 年 * 12 月 = 132 个年月任务
-```
-
-建议按 `tech + year + month` 作为 array task。
-
-可以分两批提交：
-
-```text
-wind  : 132 个 array task
-solar : 132 个 array task
-```
-
-也可以把 `tech` 放进任务表，一次性提交 264 个 task。为了控制 I/O 压力，初期建议 wind 和 solar 分开提交。
-
-### 7.2 月度缓存命名
-
-建议输出：
-
-```text
-outputs/cache/era5land_station_cf_hpc/monthly/
-  station_cf_union_wind_ERA5Land_201501_nearest_valid.nc
-  station_cf_union_wind_ERA5Land_201502_nearest_valid.nc
-  ...
-  station_cf_union_solar_ERA5Land_201501_nearest_valid.nc
-```
-
-每个月度缓存维度：
-
-```text
-time
-station
-corner = 4
-```
-
-核心变量：
-
-```text
-time(time)
-station(station)
-cf(time, station)
-era5_lat_idx(station, corner)
-era5_lon_idx(station, corner)
-era5_lat(station, corner)
-era5_lon(station, corner)
-weight(station, corner)
-```
-
-核心属性：
-
-```text
-cache_kind = era5land_station_cf_monthly
-tech = wind | solar
-year = 2015
-month = 1
-baseline_source = ERA5Land
-threshold_interp = nearest_valid | bilinear
-station_table = stations_union_ssp126_ssp245_ssp585.csv
-source_file = ...
-```
-
-### 7.3 原子写出
-
-每个 array task 必须先写临时文件：
-
-```text
-<monthly_cache>.tmp.<jobid>.<taskid>
-```
-
-写完并关闭后再：
-
-```python
-os.replace(tmp_path, monthly_cache)
-```
-
-这样失败任务不会留下看起来完整的半成品。
-
-### 7.4 array 并发控制
-
-不要一次性让 132 个任务同时读取 ERA5Land 全球 CF 文件。共享文件系统和 gzip 解压都会成为瓶颈。
-
-建议初始参数：
-
-```bash
-sbatch --array=0-131%8 ...
-```
-
-如果 I/O 稳定，再尝试：
-
-```bash
-sbatch --array=0-131%12 ...
-sbatch --array=0-131%16 ...
-```
-
-不建议一开始超过 `%16`。
-
-wind 单个原生 chunk 解压后约 1.78 GB，solar 约 593 MB。单任务内存建议：
-
-```text
-wind  : 16-32 GB
-solar : 8-16 GB
-```
-
-如果同一个节点同时跑多个 wind task，需要按并发数乘以内存估算。
-
-## 8. 阶段 A3：合并月度场站 CF 缓存
-
-月度任务全部完成后，合并成完整缓存：
-
-```text
-outputs/cache/era5land_station_cf_hpc/merged/
-  station_cf_union_wind_ERA5Land_2015-2025_nearest_valid.nc
-  station_cf_union_solar_ERA5Land_2015-2025_nearest_valid.nc
-```
-
-合并时必须检查：
-
-1. 132 个月度缓存是否全部存在。
-2. 每个月度缓存的 `tech/year/month/threshold_interp/station_table` 是否匹配。
-3. 时间轴是否连续且无重复。
-4. `station` 维度是否一致。
-5. 场站经纬度、类型和并集表是否一致。
-6. `cf` 是否存在明显全 NaN 或异常填充值。
-
-合并后的完整缓存也需要原子写出。
-
-## 9. 阶段 B1：按 SSP 子集计算低资源阈值
-
-完整并集缓存生成后，不需要再次读取 ERA5Land 全球 CF。
-
-对每个 SSP：
-
-1. 读取 `stations_union_index_map_<scenario>.csv`。
-2. 从完整并集缓存中取当前 SSP 对应的 station 子集。
-3. 计算：
-   - 24h centered rolling mean
-   - `clim(12,24,station)`
-   - `threshold(station) = P5(anom)`
-4. 写出当前 SSP 的稀疏低资源阈值文件。
-
-输出仍然沿用当前 schema：
-
-```text
-outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025/
-  low_resource_threshold_sparse_ssp126_wind_ERA5Land_2015-2025.nc
-  low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2025.nc
-  low_resource_threshold_sparse_ssp245_wind_ERA5Land_2015-2025.nc
-  ...
-```
-
-## 10. 与 ssp126 增量复用的关系
-
-如果采用“三个 SSP 场站并集缓存”，则 step1 的主要复用方式会变化：
-
-1. 原来的复用：`ssp245/ssp585` 从 `ssp126` 阈值文件复制重合场站阈值。
-2. 超算推荐复用：三个 SSP 共享同一个并集 station CF 缓存。
-
-推荐保留原有 `ssp126` 阈值复用逻辑作为兼容路径，但在超算流程中优先使用并集缓存。
-
-原因：
-
-1. 读取 ERA5Land 全球 CF 是最慢步骤。
-2. 用并集缓存可以从源头避免三个 SSP 重复读全球 CF。
-3. 阈值计算本身相对快，不必过度依赖阈值层面的复制。
-
-## 11. Slurm 脚本建议
-
-### 11.1 月度缓存 array job
-
-示例命令：
-
-```bash
-sbatch \
-  --partition=wzhctest \
-  --array=0-131%8 \
-  --cpus-per-task=4 \
-  --mem=32G \
-  --time=12:00:00 \
-  --job-name=era5cf_wind_cache \
-  jobs/step1_build_monthly_station_cf_cache.sbatch wind
-```
-
-`solar` 可以使用较小内存：
-
-```bash
-sbatch \
-  --partition=wzhctest \
-  --array=0-131%8 \
-  --cpus-per-task=4 \
-  --mem=16G \
-  --time=12:00:00 \
-  --job-name=era5cf_solar_cache \
-  jobs/step1_build_monthly_station_cf_cache.sbatch solar
-```
-
-### 11.2 合并完整缓存
-
-```bash
-sbatch \
-  --partition=wzhctest \
-  --cpus-per-task=4 \
-  --mem=64G \
-  --time=8:00:00 \
-  --job-name=merge_wind_cache \
-  jobs/step1_merge_station_cf_cache.sbatch wind
-```
-
-### 11.3 计算 SSP 阈值
-
-```bash
-sbatch \
-  --partition=wzhctest \
-  --cpus-per-task=4 \
-  --mem=64G \
-  --time=8:00:00 \
-  --job-name=threshold_ssp126_wind \
-  jobs/step1_threshold_from_union_cache.sbatch ssp126 wind
-```
-
-## 12. 推荐代码入口
-
-建议在现有 step1 基础上增加超算专用内部入口或脚本，而不是把 Slurm 逻辑硬塞进普通入口。
-
-推荐新增：
-
-```text
-scripts/hpc_step1_build_union_stations.py
-scripts/hpc_step1_build_monthly_station_cf_cache.py
-scripts/hpc_step1_merge_station_cf_cache.py
-scripts/hpc_step1_threshold_from_union_cache.py
-```
-
-推荐保留当前用户入口：
-
-```text
-step1_low_resource_thresholds.py
-```
-
-普通入口适合本地或单节点运行；HPC 脚本适合 Slurm array 和批处理。
-
-## 13. 环境准备
-
-超算侧建议使用项目 `.venv` 或重新创建 uv 环境。
-
-检查命令：
-
-```bash
-which python
-python -V
-python -c "import numpy, pandas, netCDF4, h5py; print('ok')"
-```
-
-如果超算没有 uv，可以选择：
-
-1. 在超算上安装 uv 后同步环境。
-2. 使用已有 Python module 创建 `.venv`。
-3. 使用 conda/mamba 创建等价环境。
-
-正式方案应尽量不新增依赖，优先使用现有 `numpy/pandas/netCDF4/h5py`。
-
-## 14. 运行前检查清单
-
-提交 Slurm 任务前检查：
-
-```bash
-pwd
-ls data/stations/
-ls data/cfs/CFs_of_wind_ERA5Land | head
-ls data/cfs/CFs_of_solar_ERA5Land | head
-python -c "import h5py, netCDF4, numpy, pandas; print('env ok')"
-```
-
-检查 ERA5Land CF 文件：
-
-1. 2015-2025 年 wind 月文件是否齐全。
-2. 2015-2025 年 solar 月文件是否齐全。
-3. 文件变量名是否和本地一致。
-4. HDF5 chunk 是否仍为预期的 `(72,1801,3600)` 或 `(24,1801,3600)`。
-
-检查场站文件：
-
-1. 三个 SSP 场站 CSV 是否存在。
-2. 经纬度字段和类型字段是否能被当前代码识别。
-3. 并集场站数量是否合理。
-
-## 15. 失败恢复策略
-
-月度缓存适合断点续跑。
-
-推荐规则：
-
-1. 已存在且校验通过的月度缓存不重复生成。
-2. 失败或校验不通过的月份单独重跑。
-3. 合并阶段只在 132 个月度缓存全部通过校验后执行。
-4. 完整缓存已存在且校验通过时，阈值阶段直接复用。
-
-重跑单个月份的方式：
-
-```bash
-sbatch --array=<task_id> jobs/step1_build_monthly_station_cf_cache.sbatch wind
-```
-
-如果一个月份反复失败，优先检查：
-
-1. 源 ERA5Land CF 文件是否损坏。
-2. 该月时间轴是否异常。
-3. 该月变量名或维度是否和其他月份不一致。
-4. Slurm 内存是否不足。
-
-## 16. 性能预期
-
-本地旧流程的问题是点式读取导致同一个巨大 gzip chunk 被反复解压。  
-本地新流程按原生 chunk 读取后，每个 chunk 只解压一次。  
-超算流程在此基础上按月份并行，因此 wall time 主要取决于：
-
-1. 单个月文件读取和抽取耗时。
-2. Slurm array 并发数。
-3. `/work` 共享文件系统 I/O 压力。
-4. gzip 解压 CPU 开销。
-
-初期建议保守并发：
-
-```text
-wind  : array %8
-solar : array %8
-```
-
-如果 I/O 等待不高，可以逐步提高到 `%12` 或 `%16`。
-
-不建议同时高并发提交 wind 和 solar，因为二者都会读取全球 ERA5Land CF 文件并解压大型 chunk。
-
-## 17. 风险
-
-1. 数据未同步到超算侧时，不能直接运行。
-2. 登录节点不能跑正式计算。
-3. array 并发过高会导致共享文件系统 I/O 拥塞。
-4. 月度缓存和完整缓存体积较大，需要提前确认 `/work` 配额。
-5. 并集场站表必须稳定，否则缓存和 SSP 子集映射会错位。
-6. 如果后续修改 `nearest_valid/bilinear` 算法，必须重建对应插值方法的缓存。
-
-## 18. 推荐执行顺序
-
-```text
-1. 同步代码到 /work。
-2. 同步 ERA5Land wind/solar CF 数据到 /work。
-3. 在超算侧建立 Python 环境。
-4. 生成三个 SSP 的场站并集表。
-5. 提交 wind 月度缓存 Slurm array。
-6. wind 月度缓存全部完成后，合并 wind 完整缓存。
-7. 从 wind 完整缓存计算三个 SSP 的 wind 阈值。
-8. 提交 solar 月度缓存 Slurm array。
-9. solar 月度缓存全部完成后，合并 solar 完整缓存。
-10. 从 solar 完整缓存计算三个 SSP 的 solar 阈值。
-11. 检查 6 个最终阈值文件完整性。
-```
-
-如果 `/work` I/O 压力较小，也可以 wind 和 solar 分别使用较低并发同时提交，但初次运行不建议这样做。
-
-## 19. 最终验收
 
 最终应得到 6 个阈值文件：
 
 ```text
 ssp126 wind
-ssp126 solar
 ssp245 wind
-ssp245 solar
 ssp585 wind
+ssp126 solar
+ssp245 solar
 ssp585 solar
 ```
 
-每个文件应满足：
+输出 schema 继续沿用当前 step1 稀疏阈值文件：
 
-1. `clim` 形状为 `(12, 24, station)`。
-2. `threshold` 形状为 `(station,)`。
-3. `valid_count` 形状为 `(station,)`。
-4. `station_lon/station_lat/station_type` 与对应 SSP 场站文件一致。
-5. `threshold_interp` 和缓存插值方法一致。
-6. 文件属性记录 ERA5Land、baseline years、source cache 和生成时间。
+```text
+clim(month=12, hour=24, station)
+threshold(station)
+valid_count(station)
+station_lon/station_lat/station_type
+era5_lat_idx/era5_lon_idx/weight
+```
 
-完成后，下游 step2/step3 继续读取这些稀疏阈值文件，不需要知道它们来自本地串行流程还是超算并行流程。
+## 3. 远端环境当前检查结果
+
+### 3.1 scnet-kunshan-185
+
+已确认：
+
+```text
+Host: login07
+User: acbw9wpn5k
+Home: /public/home/acbw9wpn5k
+Slurm: /opt/gridview/slurm/bin/sbatch, /opt/gridview/slurm/bin/squeue
+/data: 约 29T，总体可用约 26T
+/public/home: 共享文件系统可用
+uv: /public/home/acbw9wpn5k/.local/bin/uv
+共享 venv: /public/home/acbw9wpn5k/.venv
+Python: 3.12.13
+```
+
+待处理：
+
+1. 检查时 `/data/cfs/CFs_of_wind_ERA5Land` 尚未出现或尚未完成上传，`wind_cf_*.nc` 文件数为 0。
+2. `/public/home/acbw9wpn5k/.venv` 已存在，但缺少 step1 必要依赖：
+
+```text
+numpy
+pandas
+netCDF4
+h5py
+```
+
+本项目 `requirements.txt` 中还包含 `global-land-mask`，step1 的默认 `nearest_valid` 会优先使用它识别陆地点，也应安装。
+
+### 3.2 scnet-kunshan-199
+
+已确认：
+
+```text
+Host: login09
+User: aclym5felp
+Home: /public/home/aclym5felp
+Slurm: /opt/gridview/slurm/bin/sbatch, /opt/gridview/slurm/bin/squeue
+/data: 约 29T，总体可用约 22T
+/public/home: 共享文件系统可用
+可访问共享 venv: /public/home/acbw9wpn5k/.venv
+Python: 3.12.13
+```
+
+待处理：
+
+1. 检查时 `/data/cfs/CFs_of_solar_ERA5Land` 尚未出现或尚未完成上传，`solar_cf_*.nc` 文件数为 0。
+2. 199 可以看到 185 的共享 venv，但该 venv 当前同样缺少 step1 必要依赖。
+
+## 4. 总体设计
+
+本项目保留两个 step1 入口体系：
+
+1. 普通完整入口：`step1_low_resource_thresholds.py`
+   - 用于本地、单 SSP、调试或兼容已有流程。
+   - 该入口可以逐 SSP 生成场站 CF 缓存，并允许 `ssp245/ssp585` 从 `ssp126` 阈值文件复用交集场站。
+   - 不参与昆山超算生产主流程，不被超算作业生成器或监控程序调用。
+2. 超算拆分入口：`step1_split_E1/E2a/E2b/E3`
+   - 这是昆山超算生产运行的唯一方案。
+   - 所有超算生产作业只调用 E1/E2a/E2b/E3 对应入口，禁止转调 `step1_low_resource_thresholds.py`。
+   - 不逐 SSP 从 ERA5Land CF 文件抽取场站 CF。
+   - 先合并三个 SSP 的所有场站，按 `(lon, lat, type)` 去重，生成并集场站表和 SSP 到并集的索引映射。
+   - 每个技术类型按年月分块从 ERA5Land CF 中抽取并集场站 CF，生成分块缓存。
+   - 合并分块缓存得到完整 union station CF cache。
+   - 再从完整 union cache 按 SSP 子集分别计算 6 个最终阈值文件。
+
+整体 step1 阈值使用的 ERA5Land CF 年份固定为：
+
+```text
+2015-2024，共 10 年，120 个月
+```
+
+超算版拆分为四个明确步骤：
+
+```text
+step1_split_E1_union_stations.py
+  本地执行：计算 ssp126/ssp245/ssp585 场站并集和映射，结果保存到 outputs/。
+
+step1_split_E2a_extract_union_station_cf_monthly.py
+  远端执行：每个 job 处理一个 year 或一个 year-month/month-range，可通过参数指定。
+
+step1_split_E2b_merge_union_station_cf_cache.py
+  远端执行：合并所有月度/年度分块缓存为完整 union station CF cache。
+
+step1_split_E3_thresholds_from_union_cache.py
+  远端执行：从 union station CF cache 按 SSP 映射计算最终稀疏阈值文件。
+```
+
+超算生产运行流程：
+
+```text
+阶段 A：远端一次性配置
+阶段 B：本地执行 step1_split_E1，生成三个 SSP 场站并集
+阶段 C：同步 E1 结果到两台昆山服务器
+阶段 D：前期测试 E2a 的 2015 年 1 月作业，标定核心数和耗时
+阶段 E：为 wind/solar 分别生成 1 个 E2a 前期测试作业和 20 个 E2a 正式分块作业
+阶段 F：监控程序识别 2015.1 测试缓存有效且 20 个正式 E2a 作业全部完成后提交 E2b
+阶段 G：监控程序识别 E2b 完成后提交 E3
+阶段 H：检查输出完整性
+阶段 I：记录完成状态和核时
+阶段 J：同步最终阈值文件回本地
+```
+
+本阶段不引入 MPI，也不做跨节点 Python 分布式计算。每个 Slurm 作业仍是单节点任务；wind 和 solar 的并行来自两台服务器各自独立运行。
+
+## 5. 目录约定
+
+### 5.1 远端目录
+
+两台服务器均使用相同项目目录结构：
+
+```text
+/public/home/<USER>/extreme_event_definitions/
+  data/
+    stations/
+  jobs/
+    step1_low_resource/
+  logs/
+    step1/
+    slurm/
+  outputs/
+    cache/
+      era5land_union_station_cf/
+        union_stations/
+        time_chunks/
+        merged_cache/
+    low_resource_thresholds/
+      sparse_station_ERA5Land_2015-2024/
+```
+
+ERA5Land CF 数据位于 `/data/cfs/`：
+
+```text
+scnet-kunshan-185:/data/cfs/CFs_of_wind_ERA5Land
+scnet-kunshan-199:/data/cfs/CFs_of_solar_ERA5Land
+```
+
+作业中通过参数指定：
+
+```bash
+--cf_root /data/cfs
+```
+
+### 5.2 本地记录目录
+
+建议新增：
+
+```text
+infos/hpc_step1/
+  create_jobs_kunshan.py
+  completion_status/
+    completion_scnet-kunshan-185.csv
+    completion_scnet-kunshan-199.csv
+    usage_scnet-kunshan-185.csv
+    usage_scnet-kunshan-199.csv
+    latest_snapshot.json
+```
+
+`infos/hpc_step1/create_jobs_kunshan.py` 是本地模板；每台服务器可以复制到家目录形成自己的可编辑副本：
+
+```text
+~/create_step1_jobs_kunshan.py
+```
+
+这沿用 BCSD 的经验：远端专用作业配置允许按服务器修改，但主程序代码仍在本地开发、提交、推送，远端只做 fast-forward 更新。
+
+### 5.3 本地 E1 输出目录
+
+`step1_split_E1_union_stations.py` 在本地执行，输出必须放在 `outputs/` 下：
+
+```text
+outputs/cache/era5land_union_station_cf/union_stations/
+  stations_union_ssp126_ssp245_ssp585.csv
+  station_index_map_ssp126.csv
+  station_index_map_ssp245.csv
+  station_index_map_ssp585.csv
+  union_stations_manifest.json
+  e2a_chunk_plan_2015-2024.csv
+```
+
+其中：
+
+1. `stations_union_ssp126_ssp245_ssp585.csv` 保存三个 SSP 去重后的并集场站。
+2. `station_index_map_<scenario>.csv` 保存对应 SSP 原始场站顺序到并集场站顺序的映射。
+3. `union_stations_manifest.json` 记录输入场站文件、去重键、行数、生成时间和代码版本。
+4. `e2a_chunk_plan_2015-2024.csv` 是 E2a 唯一作业清单，固定记录每个技术类型需要处理的 21 个时间缓存块。表头为：
+
+```csv
+chunk_id,year_month_start,year_month_end,is_probe,expected_month_count,job_name,cache_file
+```
+
+清单第一行为 `2015-01` 测试块，之后是 `2015-02~2015-06` 和 2015-2024 各半年的 20 个正式块。`expected_month_count` 总和必须为 120，`chunk_id` 和 `cache_file` 必须唯一。由于 E1 与技术类型无关，`job_name` 和 `cache_file` 使用 `{tech}` 占位符，由 wind/solar 作业生成器展开。作业生成器、监控程序和 E2b 都读取该清单，不在各自代码中重复维护时间范围。
+
+E1 输出生成后，需要同步到两台远端服务器同一路径：
+
+```text
+~/extreme_event_definitions/outputs/cache/era5land_union_station_cf/union_stations/
+```
+
+同步命令示例：
+
+```bash
+rsync -av \
+  outputs/cache/era5land_union_station_cf/union_stations/ \
+  scnet-kunshan-185:/public/home/acbw9wpn5k/extreme_event_definitions/outputs/cache/era5land_union_station_cf/union_stations/
+
+rsync -av \
+  outputs/cache/era5land_union_station_cf/union_stations/ \
+  scnet-kunshan-199:/public/home/aclym5felp/extreme_event_definitions/outputs/cache/era5land_union_station_cf/union_stations/
+```
+
+## 6. 数据上传
+
+用户当前正在上传：
+
+```text
+本地 wind  源：/data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_wind_ERA5Land
+远端 wind  目标：scnet-kunshan-185:/data/cfs/
+
+本地 solar 源：/data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_solar_ERA5Land
+远端 solar 目标：scnet-kunshan-199:/data/cfs/
+```
+
+脱敏上传命令模板：
+
+```bash
+# scnet-kunshan-185 wind
+rayfile-c \
+  -a ksefile.hpccube.com \
+  -P 65245 \
+  -u acbw9wpn5k \
+  -w '<RAYFILE_TOKEN_185>' \
+  -tm -no-meta -symbolic-links follow \
+  -retry 10 -retrytimeout 30 \
+  -o upload \
+  -d /data/cfs/ \
+  -s /data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_wind_ERA5Land
+
+# scnet-kunshan-199 solar
+rayfile-c \
+  -a ksefile.hpccube.com \
+  -P 65245 \
+  -u aclym5felp \
+  -w '<RAYFILE_TOKEN_199>' \
+  -tm -no-meta -symbolic-links follow \
+  -retry 10 -retrytimeout 30 \
+  -o upload \
+  -d /data/cfs/ \
+  -s /data6/yanxiaokai/project_climate/extreme_event_definitions/data/cfs/CFs_of_solar_ERA5Land
+```
+
+上传完成后检查：
+
+```bash
+# wind on scnet-kunshan-185
+find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
+ls -lh /data/cfs/CFs_of_wind_ERA5Land/wind_cf_2015_01.nc
+ls -lh /data/cfs/CFs_of_wind_ERA5Land/wind_cf_2024_12.nc
+
+# solar on scnet-kunshan-199
+find /data/cfs/CFs_of_solar_ERA5Land -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
+ls -lh /data/cfs/CFs_of_solar_ERA5Land/solar_cf_2015_01.nc
+ls -lh /data/cfs/CFs_of_solar_ERA5Land/solar_cf_2024_12.nc
+```
+
+2015-2024 完整基准期应为 120 个月文件。若文件数不足，不提交生产作业。
+
+## 7. 新服务器一次性配置
+
+### 7.1 Clone 代码
+
+分别在两台服务器执行：
+
+```bash
+ssh scnet-kunshan-185
+```
+
+或：
+
+```bash
+ssh scnet-kunshan-199
+```
+
+检查项目目录：
+
+```bash
+ls -ld ~/extreme_event_definitions 2>/dev/null || true
+```
+
+如果不存在：
+
+```bash
+git clone \
+  --branch hpc-step1-low-resource-acceleration \
+  --single-branch \
+  <REPO_URL> \
+  ~/extreme_event_definitions
+```
+
+如果目录已存在但不是 Git 仓库，不能删除或覆盖；先检查是否有 `data/`、`outputs/`、`logs/` 或其他手工文件。
+
+### 7.2 更新已有仓库
+
+```bash
+cd ~/extreme_event_definitions
+git rev-parse --abbrev-ref HEAD
+git status --short
+```
+
+只有当前分支是 `hpc-step1-low-resource-acceleration` 且工作区干净时，才执行：
+
+```bash
+git pull --ff-only origin hpc-step1-low-resource-acceleration
+git rev-parse --short HEAD
+```
+
+如果远端工作区不干净，只报告，不使用 `git reset --hard`、`git checkout --` 等破坏性命令。
+
+### 7.3 配置 shell
+
+建议在 `~/.bashrc` 中追加，已有则不重复添加：
+
+```bash
+export PS1='[\u@\h \w]\$ '
+alias sq='squeue --sort=j -o "%.18i %.9P %.50j %.8u %.2t %.10M %.6D %R"'
+alias ll='ls -alh'
+```
+
+生效：
+
+```bash
+source ~/.bashrc
+```
+
+### 7.4 配置 Python 环境
+
+当前 185 已有共享 venv：
+
+```bash
+source /public/home/acbw9wpn5k/.venv/bin/activate
+python -V
+```
+
+该环境可以被 199 访问，但当前缺少必要依赖。建议在 185 上补装一次，让 199 复用同一个环境：
+
+```bash
+ssh scnet-kunshan-185
+source /public/home/acbw9wpn5k/.venv/bin/activate
+cd ~/extreme_event_definitions
+
+uv pip install -r requirements.txt
+```
+
+最低依赖检查：
+
+```bash
+source /public/home/acbw9wpn5k/.venv/bin/activate
+python - <<'PY'
+mods = [
+    "numpy",
+    "pandas",
+    "netCDF4",
+    "h5py",
+    "global_land_mask",
+]
+missing = []
+for name in mods:
+    try:
+        __import__(name)
+    except Exception as exc:
+        missing.append((name, repr(exc)))
+if missing:
+    raise SystemExit(f"缺少依赖: {missing}")
+print("step1 Python 环境正常")
+PY
+```
+
+作业脚本中必须显式激活：
+
+```bash
+source /public/home/acbw9wpn5k/.venv/bin/activate
+```
+
+不要使用裸 `python`。
+
+## 8. 作业生成器设计
+
+新增脚本：
+
+```text
+infos/hpc_step1/create_jobs_kunshan.py
+```
+
+职责：
+
+1. 按服务器生成对应技术类型的 E2a/E2b/E3 Slurm 作业。
+2. 自动写入 `--cf_root /data/cfs`。
+3. 自动写入 E1 生成的并集场站表和 SSP 映射文件路径。
+4. 读取 E1 生成的 `e2a_chunk_plan_2015-2024.csv`，自动生成 1 个 E2a 前期测试作业和 20 个 E2a 正式分块作业，共 21 个 E2a 时间缓存块。
+5. 自动设置 E2a 时间分块缓存、E2b 完整 union cache、最终阈值输出路径和日志路径；生产作业默认不传 `--overwrite`。
+6. 生成 E2b 和 E3 作业脚本，但不在初次提交时提交它们；监控程序在依赖条件满足后提交。
+7. 只生成脚本，不自动提交。
+8. 默认拒绝覆盖已有作业脚本；传入 `--force` 才覆盖。
+9. 生成后打印后续检查和提交命令。
+10. 生成器必须校验清单正好包含 21 行任务、覆盖 120 个月且时间范围无重叠、无缺月。
+
+推荐生成出的远端脚本：
+
+```text
+~/jobs/step1_low_resource/
+  job_step1_split_E2a_extract_union_cf_wind_2015_01.sh
+  job_step1_split_E2a_extract_union_cf_wind_2015_02_2015_06.sh
+  job_step1_split_E2a_extract_union_cf_wind_2015_07_2015_12.sh
+  ...
+  job_step1_split_E2a_extract_union_cf_wind_2024_07_2024_12.sh
+  job_step1_split_E2b_merge_union_cf_wind.sh
+  job_step1_split_E3_thresholds_wind.sh
+  submit_step1_split_E2a_initial_wind.sh
+  submit_step1_split_E2a_batches_wind.sh
+
+~/jobs/step1_low_resource/
+  job_step1_split_E2a_extract_union_cf_solar_2015_01.sh
+  job_step1_split_E2a_extract_union_cf_solar_2015_02_2015_06.sh
+  job_step1_split_E2a_extract_union_cf_solar_2015_07_2015_12.sh
+  ...
+  job_step1_split_E2a_extract_union_cf_solar_2024_07_2024_12.sh
+  job_step1_split_E2b_merge_union_cf_solar.sh
+  job_step1_split_E3_thresholds_solar.sh
+  submit_step1_split_E2a_initial_solar.sh
+  submit_step1_split_E2a_batches_solar.sh
+```
+
+服务器分工由生成器内置默认值控制：
+
+```python
+SERVER_CONFIG = {
+    "scnet-kunshan-185": {
+        "tech": "wind",
+        "user": "acbw9wpn5k",
+        "project_dir": "/public/home/acbw9wpn5k/extreme_event_definitions",
+        "python_activate": "/public/home/acbw9wpn5k/.venv/bin/activate",
+    },
+    "scnet-kunshan-199": {
+        "tech": "solar",
+        "user": "aclym5felp",
+        "project_dir": "/public/home/aclym5felp/extreme_event_definitions",
+        "python_activate": "/public/home/acbw9wpn5k/.venv/bin/activate",
+    },
+}
+```
+
+SSP 场站映射：
+
+```python
+SCENARIOS = {
+    "ssp126": "data/stations/stations_SSP1-2.6.csv",
+    "ssp245": "data/stations/stations_SSP2-4.5.csv",
+    "ssp585": "data/stations/stations_SSP5-6.0.csv",
+}
+```
+
+E1 产物路径：
+
+```python
+UNION_STATION_DIR = "outputs/cache/era5land_union_station_cf/union_stations"
+UNION_STATION_FILE = f"{UNION_STATION_DIR}/stations_union_ssp126_ssp245_ssp585.csv"
+UNION_MAP_FILES = {
+    "ssp126": f"{UNION_STATION_DIR}/station_index_map_ssp126.csv",
+    "ssp245": f"{UNION_STATION_DIR}/station_index_map_ssp245.csv",
+    "ssp585": f"{UNION_STATION_DIR}/station_index_map_ssp585.csv",
+}
+```
+
+### 8.1 Slurm 资源建议
+
+昆山节点有类似 BCSD 的 20 个作业限制，应按“已提交 + 排队 + 运行”一起控制。E2a 的正式分块作业正好是 20 个，因此同一台服务器在 E2a 正式阶段不再额外提交 E2b/E3；E2b 和 E3 由监控程序在整点检查时顺序提交。
+
+初始资源建议：
+
+| 阶段 | 技术类型 | kernel_num (`#SBATCH -n`) | time | 备注 |
+|---|---|---:|---:|---|
+| E2a 测试 2015.1 | wind | 待测试 | 4:00:00 | 用 2015 年 1 月标定内存和时间 |
+| E2a 测试 2015.1 | solar | 待测试 | 4:00:00 | 用 2015 年 1 月标定内存和时间 |
+| E2a 正式分块 | wind | 按测试结果调整 | 24:00:00 | wind 原生 chunk 为 72h，单 chunk 解压后约 1.78GB |
+| E2a 正式分块 | solar | 按测试结果调整 | 24:00:00 | solar 原生 chunk 为 24h，单 chunk 解压后约 593MB |
+| E2b 合并完整缓存 | wind | 4 | 8:00:00 | 只合并 E2a 分块缓存 |
+| E2b 合并完整缓存 | solar | 4 | 8:00:00 | 只合并 E2a 分块缓存 |
+| E3 从缓存算阈值 | wind | 4 | 8:00:00 | 不再读取 ERA5Land 全球 CF |
+| E3 从缓存算阈值 | solar | 4 | 8:00:00 | 不再读取 ERA5Land 全球 CF |
+
+如果平台内存按核分配，按 BCSD 经验可先按约 `3.5 GB/核` 估算。前期测试结束后，根据 `sacct` 的 `MaxRSS` 按 25% 余量调整正式 E2a 的核心数：
+
+```text
+kernel_num = ceil(MaxRSS_GB * 1.25 / 3.5)
+```
+
+作业脚本应包含：
+
+```bash
+#SBATCH -N 1
+#SBATCH -n <KERNEL_NUM>
+#SBATCH --time=<TIME_LIMIT>
+#SBATCH --job-name=step1_E2a_<tech>_<yyyymm_range> 或 step1_E2b_<tech> 或 step1_E3_<tech>
+#SBATCH --output=/public/home/<USER>/extreme_event_definitions/logs/slurm/step1_<stage>_<tech>_%j.out
+```
+
+这里按用户当前要求使用 `#SBATCH -n {kernel_num}` 表示申请进程数。Python 代码本身仍应按单进程运行；该参数主要用于向平台申请足够核数和内存。
+
+是否需要 `--partition` 由昆山默认分区决定。生成器支持 `--partition`，但默认不强制写入。
+
+### 8.2 E1：本地计算三个 SSP 场站并集
+
+E1 在本地执行，不需要超算。示例命令：
+
+```bash
+python step1_split_E1_union_stations.py \
+  --stations_csv_ssp126 data/stations/stations_SSP1-2.6.csv \
+  --stations_csv_ssp245 data/stations/stations_SSP2-4.5.csv \
+  --stations_csv_ssp585 data/stations/stations_SSP5-6.0.csv \
+  --output_dir outputs/cache/era5land_union_station_cf/union_stations \
+  --key lon,lat,type
+```
+
+E1 必须检查：
+
+1. 三个 SSP 场站 CSV 都可读取。
+2. `type` 只包含 `wind/solar`。
+3. 并集表中 `(lon,lat,type)` 不重复。
+4. 三个映射文件都能把原 SSP 场站顺序映射回并集表。
+5. 输出 manifest 记录输入文件大小、mtime、sha256 或等价指纹。
+
+### 8.3 E2a：远端分块抽取 union station CF cache
+
+E2a 每个 job 处理一个 year 或一个 year-month/month-range，由参数指定。
+
+前期测试只提交 2015 年 1 月：
+
+```bash
+python step1_split_E2a_extract_union_station_cf_monthly.py \
+  --cf_root /data/cfs \
+  --union_stations_csv outputs/cache/era5land_union_station_cf/union_stations/stations_union_ssp126_ssp245_ssp585.csv \
+  --tech wind \
+  --year_month_start 2015-01 \
+  --year_month_end 2015-01 \
+  --threshold_interp nearest_valid \
+  --output_dir outputs/cache/era5land_union_station_cf/time_chunks
+```
+
+solar 测试作业只需把 `--tech wind` 换成 `--tech solar`。
+
+`--overwrite` 只允许在这个一次性前期测试被明确判定需要重跑，并由人工确认旧缓存不再使用时传入。首次测试提交和所有生产作业默认都不传该参数；目标缓存已存在时程序应拒绝覆盖并以非零状态退出。
+
+E2a 正式作业以 6 个月为一个作业。由于前期测试已经完成 2015 年 1 月，2015 年第一个正式作业只处理 2015 年 2-6 月。每个技术类型生成 1 个测试作业和 20 个正式分块作业：
+
+```text
+2015.1
+2015.2~2015.6
+2015.7~2015.12
+2016.1~2016.6
+2016.7~2016.12
+...
+2024.1~2024.6
+2024.7~2024.12
+```
+
+其中 `2015.1` 是前期测试作业。若测试作业输出通过校验，正式提交阶段直接复用该分块缓存，不重复提交 2015 年 1 月。正式批量提交的是除 `2015.1` 以外的 20 个作业。因此，每个技术类型实际必须生成并保留 **21 个 E2a 时间缓存块**：1 个测试缓存块加 20 个正式缓存块，共同覆盖 2015-2024 的 120 个月。
+
+正式分块作业示例：
+
+```bash
+python step1_split_E2a_extract_union_station_cf_monthly.py \
+  --cf_root /data/cfs \
+  --union_stations_csv outputs/cache/era5land_union_station_cf/union_stations/stations_union_ssp126_ssp245_ssp585.csv \
+  --tech wind \
+  --year_month_start 2016-01 \
+  --year_month_end 2016-06 \
+  --threshold_interp nearest_valid \
+  --output_dir outputs/cache/era5land_union_station_cf/time_chunks
+```
+
+E2a 是唯一读取 ERA5Land 全球 CF 文件的阶段。三个 SSP 不再分别抽取。
+正式 E2a 作业不得默认传 `--overwrite`；需要重跑某一块时，先确认旧作业已结束并隔离或删除损坏缓存，再由人工显式传入。
+
+### 8.4 E2b：远端合并完整 union station CF cache
+
+E2b 在监控程序确认 `2015.1` 测试缓存有效、20 个 E2a 正式作业全部完成且分块缓存全部通过校验后提交。
+
+```bash
+python step1_split_E2b_merge_union_station_cf_cache.py \
+  --time_chunk_dir outputs/cache/era5land_union_station_cf/time_chunks \
+  --chunk_plan_csv outputs/cache/era5land_union_station_cf/union_stations/e2a_chunk_plan_2015-2024.csv \
+  --tech wind \
+  --baseline_years 2015-2024 \
+  --threshold_interp nearest_valid \
+  --output_cache outputs/cache/era5land_union_station_cf/merged_cache/station_cf_union_wind_ERA5Land_2015-2024_nearest_valid.nc
+```
+
+solar 服务器只需把 `--tech wind` 换成 `--tech solar`，并把 cache 文件改成 solar。
+
+### 8.5 E3：远端从完整 union cache 计算三个 SSP 阈值
+
+E3 在监控程序确认 E2b 完成且完整 union cache 通过校验后提交。
+
+```bash
+python step1_split_E3_thresholds_from_union_cache.py \
+  --union_station_cf_cache outputs/cache/era5land_union_station_cf/merged_cache/station_cf_union_wind_ERA5Land_2015-2024_nearest_valid.nc \
+  --union_stations_csv outputs/cache/era5land_union_station_cf/union_stations/stations_union_ssp126_ssp245_ssp585.csv \
+  --index_map_ssp126 outputs/cache/era5land_union_station_cf/union_stations/station_index_map_ssp126.csv \
+  --index_map_ssp245 outputs/cache/era5land_union_station_cf/union_stations/station_index_map_ssp245.csv \
+  --index_map_ssp585 outputs/cache/era5land_union_station_cf/union_stations/station_index_map_ssp585.csv \
+  --tech wind \
+  --baseline_years 2015-2024 \
+  --output_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024
+```
+
+solar 服务器只需把 `--tech wind` 换成 `--tech solar`，并把 cache 文件改成 solar。
+
+## 9. 提交顺序
+
+超算 split step1 的提交顺序固定为：
+
+```text
+本地：
+1. step1_split_E1_union_stations.py
+2. rsync E1 输出到 scnet-kunshan-185 和 scnet-kunshan-199
+
+scnet-kunshan-185:
+3. 提交 wind 2015.1 E2a 前期测试作业
+4. 根据测试 MaxRSS/耗时调整 wind E2a 正式作业核心数和 time limit
+5. 提交 wind 的 20 个 E2a 分块作业
+6. 监控程序识别 2015.1 测试缓存有效且 20 个正式 E2a 作业全部 VALID 后提交 wind E2b
+7. 监控程序识别 wind E2b VALID 后提交 wind E3
+
+scnet-kunshan-199:
+3. 提交 solar 2015.1 E2a 前期测试作业
+4. 根据测试 MaxRSS/耗时调整 solar E2a 正式作业核心数和 time limit
+5. 提交 solar 的 20 个 E2a 分块作业
+6. 监控程序识别 2015.1 测试缓存有效且 20 个正式 E2a 作业全部 VALID 后提交 solar E2b
+7. 监控程序识别 solar E2b VALID 后提交 solar E3
+```
+
+E2a 正式分块作业不使用一个包含 120 个 array element 的大数组，避免触发 20 个作业上限。生成器应创建 20 个普通 Slurm 作业脚本，或者在平台确认 array element 不计入作业数量后才考虑数组模式。
+
+监控程序每隔 1 小时检查一次，并对齐自然整点，例如 `18:00`、`19:00`、`20:00`。监控程序负责：
+
+1. 检查 E2a 20 个正式分块作业是否全部结束。
+2. 按 E2a 作业清单校验 `2015.1` 测试缓存和 20 个正式 E2a 分块缓存，即 21 个时间缓存块是否全部有效并覆盖 120 个月。
+3. 条件满足且 E2b 未提交时，提交 E2b。
+4. 校验 E2b 完整 union cache 是否有效。
+5. 条件满足且 E3 未提交时，提交 E3。
+
+E2b/E3 的自动提交应显式检查当前队列，确保 `PENDING + RUNNING + 本次新增作业 <= 20`。
+
+监控程序必须具备幂等提交保护。每次准备提交 E2b 或 E3 前，必须同时检查：
+
+1. `latest_snapshot.json` 和 completion CSV 中是否已有该 `server + tech + stage` 的 Job ID 或已提交状态。
+2. `squeue` 中是否已有相同阶段和技术类型的活动作业。
+3. `sacct -X` 中是否已有相同阶段和技术类型的历史作业；对于失败作业，不自动重提，记录原因并等待人工确认。
+4. 目标输出是否已经存在且通过完整性校验；有效则直接记录 `VALID`，不得重新提交。
+5. 当前队列是否满足 20 个作业上限。
+
+只有以上检查均证明“从未提交且输出无效或不存在”时，才允许调用一次 `sbatch --parsable`。获得 Job ID 后必须先原子写入 `latest_snapshot.json` 和 completion CSV，再结束本轮检查。监控程序重启、重复执行 `--once` 或两个整点检查重叠时，都不得产生重复的 E2b/E3 作业；可使用主机级文件锁防止同一服务器上并发运行两个监控实例。
+
+E2b 提交示例：
+
+```bash
+e2b_id=$(sbatch --parsable job_step1_split_E2b_merge_union_cf_wind.sh)
+e2b_id=${e2b_id%%;*}
+printf 'E2b=%s\n' "$e2b_id"
+```
+
+E3 提交示例：
+
+```bash
+e3_id=$(sbatch --parsable job_step1_split_E3_thresholds_wind.sh)
+e3_id=${e3_id%%;*}
+printf 'E3=%s\n' "$e3_id"
+```
+
+两台服务器可以并行：
+
+```text
+scnet-kunshan-185: wind E2a -> wind E2b -> wind E3
+scnet-kunshan-199: solar E2a -> solar E2b -> solar E3
+```
+
+## 10. 提交前检查
+
+### 10.1 Git 和环境
+
+```bash
+cd ~/extreme_event_definitions
+git rev-parse --abbrev-ref HEAD
+git status --short
+git rev-parse --short HEAD
+
+source /public/home/acbw9wpn5k/.venv/bin/activate
+python -V
+python -m py_compile \
+  step1_split_E1_union_stations.py \
+  step1_split_E2a_extract_union_station_cf_monthly.py \
+  step1_split_E2b_merge_union_station_cf_cache.py \
+  step1_split_E3_thresholds_from_union_cache.py \
+  scripts/precompute_station_low_resource_thresholds.py
+```
+
+### 10.2 输入数据
+
+wind 服务器：
+
+```bash
+find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | wc -l
+```
+
+solar 服务器：
+
+```bash
+find /data/cfs/CFs_of_solar_ERA5Land -maxdepth 1 -type f -name 'solar_cf_*.nc' | wc -l
+```
+
+文件数必须是 120，除非显式使用非完整 baseline years。
+
+### 10.3 队列去重
+
+```bash
+squeue \
+  --sort=j \
+  -u "$USER" \
+  -o "%.18i %.9P %.60j %.8u %.10T %.10M %.6D %R"
+```
+
+检查历史作业：
+
+```bash
+export STEP1_HISTORY_START=2026-07-17
+
+sacct \
+  -X \
+  -u "$USER" \
+  -S "$STEP1_HISTORY_START" \
+  -E now \
+  --units=G \
+  -o "JobIDRaw,JobName%60,State,ExitCode,AllocCPUS,ReqMem,Start,End,Elapsed"
+```
+
+提交前若队列、历史账单、union cache 或最终阈值文件中已有同一 `stage + tech`，先核实，不重复提交。`step1_low_resource_thresholds.py` 不在超算生产主流程的编译检查、作业脚本和提交链中。
+
+## 11. 提交作业
+
+先提交 E2a 2015 年 1 月前期测试作业：
+
+```bash
+script=~/jobs/step1_low_resource/submit_step1_split_E2a_initial_wind.sh
+bash "$script"
+```
+
+测试作业完成后，用 `sacct`/`seff` 记录 MaxRSS 和耗时，调整正式 E2a 分块作业的 `#SBATCH -n` 和 `--time`。之后提交 20 个 E2a 分块作业：
+
+```bash
+script=~/jobs/step1_low_resource/submit_step1_split_E2a_batches_wind.sh
+bash "$script"
+```
+
+提交脚本必须打印每个 E2a 作业的 Job ID。提交后用打印出的实际 Job ID 抽查：
+
+```bash
+job_id='<E2A_JOB_ID_FROM_SUBMIT_OUTPUT>'
+
+scontrol show job "$job_id" |
+grep -E 'JobId=|JobName=|JobState=|Partition=|NumCPUs=|ReqMem=|Command=|StdOut='
+```
+
+E2b 和 E3 不由人工批量提交；由监控程序在整点检查时根据完成状态自动提交。
+
+## 12. 完成状态记录
+
+新增监控脚本：
+
+```text
+infos/hpc_step1/completion_status/monitor_step1_jobs.py
+```
+
+完成状态 CSV：
+
+```text
+infos/hpc_step1/completion_status/completion_scnet-kunshan-185.csv
+infos/hpc_step1/completion_status/completion_scnet-kunshan-199.csv
+```
+
+表头：
+
+```csv
+更新时间,服务器,阶段,技术类型,年月范围,作业ID,Slurm状态,输出状态,输出路径,缓存路径,运行时长,分配核数,申请内存GB,峰值内存GB,日志路径,备注
+```
+
+`输出状态` 只使用：
+
+```text
+NOT_STARTED SUBMITTED RUNNING VALID MISSING BROKEN FAILED CANCELLED OOM
+```
+
+完成判定不能只看 Slurm `COMPLETED`。
+
+E2a 判定为 `VALID` 必须同时满足：
+
+1. Slurm 作业完成或日志显示 E2a 正常结束。
+2. 当前年月范围的分块 union station CF cache 存在且大小大于 0。
+3. NetCDF/HDF5 可以打开。
+4. `cache_kind == era5land_union_station_cf_chunk`。
+5. `tech`、`year_month_start`、`year_month_end`、`threshold_interp` 与任务一致。
+6. `cf` 形状为 `(time, union_station)`。
+7. `station` 维度等于 E1 并集场站数。
+8. `time` 覆盖当前年月范围，时间轴递增且无重复。
+9. `weight.sum(axis=1)` 接近 1。
+
+E2b 判定为 `VALID` 必须同时满足：
+
+1. Slurm 作业完成或日志显示 E2b 正常结束。
+2. 完整 union station CF cache 存在且大小大于 0。
+3. NetCDF/HDF5 可以打开。
+4. `cache_kind == era5land_union_station_cf`。
+5. `tech`、`baseline_years == 2015-2024`、`threshold_interp` 与任务一致。
+6. `cf` 形状为 `(time, union_station)`。
+7. `station` 维度等于 E1 并集场站数。
+8. `time` 覆盖 2015-2024，时间轴递增且无重复。
+9. E2a 作业清单中的 21 个时间缓存块全部被纳入 manifest，合计覆盖 120 个月。
+10. `weight.sum(axis=1)` 接近 1。
+
+E3 判定为 `VALID` 必须同时满足：
+
+1. Slurm 作业完成或日志显示 step1 正常结束。
+2. 当前技术类型的三个 SSP 阈值文件均存在且大小大于 0。
+3. NetCDF/HDF5 可以打开。
+4. `threshold_kind == sparse_station`。
+5. `scenario`、`tech`、`baseline_years_requested` 与任务一致。
+6. `clim` 形状为 `(12,24,station)`。
+7. `threshold`、`valid_count` 形状为 `(station,)`。
+8. `threshold` 中没有 NaN 或 Inf。
+9. `valid_count > 0`。
+10. `weight.sum(axis=1)` 接近 1。
+
+检查单个阈值文件的 Python 逻辑应纳入监控脚本，不能只靠人工 `ncdump`。
+
+## 13. 核时记录
+
+核时 CSV：
+
+```text
+infos/hpc_step1/completion_status/usage_scnet-kunshan-185.csv
+infos/hpc_step1/completion_status/usage_scnet-kunshan-199.csv
+```
+
+表头：
+
+```csv
+检查时间,服务器,统计起始日期,等待作业数,运行作业数,完成作业数,失败作业数,累计核时,备注
+```
+
+累计 step1 核时使用顶层作业的 `CPUTimeRAW`，避免重复统计 `.batch` 和 `.extern`：
+
+```bash
+sacct \
+  -X \
+  -n \
+  -P \
+  -u "$USER" \
+  -S "$STEP1_HISTORY_START" \
+  -E now \
+  -o "JobName%80,CPUTimeRAW,State" |
+awk -F'|' '
+    $1 ~ /^step1_/ && $2 ~ /^[0-9]+$/ {
+        seconds += $2
+    }
+    END {
+        printf "step1 CPU hours: %.3f\n", seconds / 3600
+    }
+'
+```
+
+分别统计状态：
+
+```bash
+sacct \
+  -X \
+  -n \
+  -P \
+  -u "$USER" \
+  -S "$STEP1_HISTORY_START" \
+  -E now \
+  -o "JobName%80,State" |
+awk -F'|' '
+    $1 ~ /^step1_/ {
+        state=$2
+        sub(/[+ ].*$/, "", state)
+        count[state]++
+    }
+    END {
+        for (state in count) {
+            print state, count[state]
+        }
+    }
+'
+```
+
+每次监控后追加一行 usage CSV，并更新 `latest_snapshot.json`。
+
+## 14. 输出同步回本地
+
+远端最终输出：
+
+```text
+~/extreme_event_definitions/outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024/
+```
+
+本地目标：
+
+```text
+/data6/yanxiaokai/project_climate/extreme_event_definitions/outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024/
+```
+
+同步前先在远端通过监控校验。同步后本地再次校验 6 个文件。
+
+建议只同步最终阈值文件，不同步大型 station CF 缓存，除非需要排查问题。
+
+## 15. 失败排查和恢复
+
+### 15.1 OOM
+
+```bash
+sacct \
+  -j "$job_id" \
+  --units=G \
+  -o "JobID,State,ExitCode,Elapsed,AllocCPUS,ReqMem,MaxRSS,MaxVMSize"
+```
+
+真实 `MaxRSS` 通常记录在 `${job_id}.batch` 行。建议按峰值内存留 25% 余量后换算核数：
+
+```text
+new_cores = ceil(MaxRSS_GB * 1.25 / 3.5)
+```
+
+修改对应作业生成配置后重新生成脚本，不直接手改已提交脚本。
+
+### 15.2 Python 依赖缺失
+
+重新检查：
+
+```bash
+source /public/home/acbw9wpn5k/.venv/bin/activate
+python - <<'PY'
+import numpy, pandas, netCDF4, h5py, global_land_mask
+print("ok")
+PY
+```
+
+缺失时在 185 上补装，并在 199 上复查共享 venv 是否可用。
+
+### 15.3 输入数据缺失
+
+检查 120 个月文件和首尾文件：
+
+```bash
+find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | head
+find /data/cfs/CFs_of_wind_ERA5Land -maxdepth 1 -type f -name 'wind_cf_*.nc' | sort | tail
+```
+
+如果上传尚未完成，不提交作业。
+
+### 15.4 缓存半成品
+
+step1 本地实现已经使用原子写出，但失败后仍需检查：
+
+```bash
+find outputs/cache/era5land_union_station_cf -name '*.tmp.*' -print
+find outputs/low_resource_thresholds -name '*.tmp.*' -print
+```
+
+确认没有运行中的作业使用这些临时文件后，再人工清理。
+
+## 16. 实施代码清单
+
+后续代码实现建议分为以下文件：
+
+```text
+step1_split_E1_union_stations.py
+step1_split_E2a_extract_union_station_cf_monthly.py
+step1_split_E2b_merge_union_station_cf_cache.py
+step1_split_E3_thresholds_from_union_cache.py
+infos/hpc_step1/create_jobs_kunshan.py
+infos/hpc_step1/completion_status/monitor_step1_jobs.py
+infos/hpc_step1/completion_status/README.md
+scripts/hpc_step1_validate_thresholds.py
+```
+
+### 16.1 step1_split_E1_union_stations.py
+
+必须支持：
+
+1. `--stations_csv_ssp126`
+2. `--stations_csv_ssp245`
+3. `--stations_csv_ssp585`
+4. `--output_dir`
+5. `--key lon,lat,type`
+6. `--overwrite`
+
+输出：
+
+1. 并集场站 CSV。
+2. 三个 SSP 的索引映射 CSV。
+3. manifest JSON。
+4. `e2a_chunk_plan_2015-2024.csv`，包含 1 个测试块和 20 个正式块，共 21 个时间缓存块。
+
+### 16.2 step1_split_E2a_extract_union_station_cf_monthly.py
+
+必须支持：
+
+1. `--cf_root`
+2. `--union_stations_csv`
+3. `--tech wind|solar`
+4. `--year_month_start YYYY-MM`
+5. `--year_month_end YYYY-MM`
+6. `--threshold_interp nearest_valid|bilinear`
+7. `--output_dir`
+8. `--overwrite`
+
+要求：
+
+1. 只读取当前年月范围内的 ERA5Land CF 月文件。
+2. 按 HDF5 原生 time chunk 抽取并集场站 CF。
+3. 生成分块 `cf(time, union_station)` 缓存。
+4. 使用临时文件和 `os.replace` 原子发布。
+
+### 16.3 step1_split_E2b_merge_union_station_cf_cache.py
+
+必须支持：
+
+1. `--time_chunk_dir`
+2. `--chunk_plan_csv`
+3. `--tech wind|solar`
+4. `--baseline_years 2015-2024`
+5. `--threshold_interp nearest_valid|bilinear`
+6. `--output_cache`
+7. `--overwrite`
+
+要求：
+
+1. 按作业清单校验 `2015.1` 测试缓存和 20 个正式 E2a 分块缓存全部存在且有效，即严格校验 21 个时间缓存块。
+2. 按时间顺序合并为完整 union station CF cache。
+3. 完整 cache 时间轴覆盖 2015-2024 且无重复。
+4. 使用临时文件和 `os.replace` 原子发布。
+5. 生产作业默认不传 `--overwrite`；目标完整缓存已存在时拒绝覆盖。
+
+### 16.4 step1_split_E3_thresholds_from_union_cache.py
+
+必须支持：
+
+1. `--union_station_cf_cache`
+2. `--union_stations_csv`
+3. `--index_map_ssp126`
+4. `--index_map_ssp245`
+5. `--index_map_ssp585`
+6. `--tech wind|solar`
+7. `--baseline_years`
+8. `--output_dir`
+9. `--overwrite`
+
+要求：
+
+1. 不读取 ERA5Land 全球 CF。
+2. 从 union station CF cache 按 SSP 映射取子集。
+3. 为三个 SSP 分别计算并写出稀疏阈值文件。
+4. 输出 schema 与 `step1_low_resource_thresholds.py` 保持兼容。
+5. 生产作业默认不传 `--overwrite`；任一目标文件已存在时拒绝部分覆盖。
+
+### 16.5 create_jobs_kunshan.py
+
+必须支持：
+
+1. `--server scnet-kunshan-185|scnet-kunshan-199`
+2. `--force`
+3. `--partition`
+4. `--history-start`
+5. `--dry-run`
+
+输出：
+
+1. 生成 E2a/E2b/E3 Slurm 脚本和 submit 脚本。
+2. 打印脚本路径。
+3. 打印 E2a 测试提交命令、E2a 正式分块提交命令，以及监控程序后续自动提交说明。
+4. 不自动 `sbatch`。
+5. 读取并校验 E2a 作业清单，不自行推导另一套分块范围。
+6. 生成的生产作业默认不包含 `--overwrite`。
+
+### 16.6 monitor_step1_jobs.py
+
+必须支持：
+
+1. `--server all|scnet-kunshan-185|scnet-kunshan-199`
+2. `--once`
+3. `--interval 3600`
+4. `--history-start YYYY-MM-DD`
+
+`--interval 3600` 必须对齐自然整点检查，例如 `18:00`、`19:00`，而不是以上一次检查结束后再等待 3600 秒。
+
+必须采集：
+
+1. `squeue`
+2. `sacct -X`
+3. 必要时 `sstat`
+4. 远端日志 tail
+5. 远端输出阈值文件校验
+6. Git 状态
+7. Python 环境状态
+8. 累计核时
+
+自动提交 E2b/E3 前必须执行第 9 节规定的幂等检查，并使用文件锁避免并发监控实例重复提交。自动流程不得对失败作业直接重提，重跑必须由人工确认。
+
+## 17. 验收标准
+
+1. 本地 E1 生成并集场站表、三个 SSP 映射文件和 manifest。
+2. E1 产物已同步到两台昆山服务器。
+3. 两台服务器均能通过作业生成器生成对应技术类型的 E2a/E2b/E3 Slurm 脚本和 submit 脚本。
+4. 作业脚本激活 `/public/home/acbw9wpn5k/.venv`，并使用远端项目目录中的代码。
+5. 185 和 199 分别完成 2015 年 1 月 E2a 前期测试，并记录 MaxRSS、耗时和调整后的 `kernel_num`。
+6. 185 按 E2a 作业清单完成 1 个测试缓存块和 20 个 wind 正式缓存块，共 21 个时间缓存块并覆盖 120 个月。
+7. 199 按 E2a 作业清单完成 1 个测试缓存块和 20 个 solar 正式缓存块，共 21 个时间缓存块并覆盖 120 个月。
+8. 监控程序在整点识别测试缓存有效且 E2a 正式分块全部完成后自动提交 E2b。
+9. 185 完成 wind 完整 union station CF cache。
+10. 199 完成 solar 完整 union station CF cache。
+11. 监控程序在整点识别 E2b 完成后自动提交 E3。
+12. 185 从 wind union cache 计算出 ssp126/245/585 三个 wind 阈值文件。
+13. 199 从 solar union cache 计算出 ssp126/245/585 三个 solar 阈值文件。
+14. 每个 cache 和阈值文件通过第 12 节完整性校验。
+15. completion CSV 记录 E2a/E2b/E3 阶段状态。
+16. usage CSV 记录两台服务器的累计 step1 核时。
+17. 本地同步后，下游 step2/step3 可以按现有路径读取这些阈值文件。
+18. 重复运行监控程序或重启监控程序不会重复提交 E2b/E3。
+19. 超算作业脚本和监控程序均不调用 `step1_low_resource_thresholds.py`。
+
+## 18. 安全边界
+
+1. 不在登录节点直接运行完整 step1，只通过 Slurm 作业运行。
+2. 不把网页密码、rayfile token、账号密码表写入仓库。
+3. 不删除远端 `/data/cfs`、`outputs/`、`logs/`。
+4. 不使用 `git reset --hard` 或覆盖远端脏工作区。
+5. 不因作业 `PENDING` 就重复提交。
+6. 不把 Slurm `COMPLETED` 直接等同于输出有效。
+7. 不跳过 E1，也不让三个 SSP 分别从 ERA5Land CF 抽取场站 CF。
+8. 不在 E2a 分块缓存全部完成并校验前提交同技术类型的 E2b。
+9. 不在 E2b 完整 union cache 未完成并校验前运行同技术类型的 E3。
+10. 不同步大型 union station CF cache 回本地，除非需要排查。
+11. 不在超算生产作业中默认使用 `--overwrite`；覆盖任何缓存或结果前必须人工确认。
