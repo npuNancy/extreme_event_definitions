@@ -146,26 +146,18 @@ def _parse_years(years: str) -> tuple[int, int]:
     return y, y
 
 
-def _decode_time(values: np.ndarray, units: str) -> pd.DatetimeIndex:
-    units_l = units.strip()
-    if " since " not in units_l:
-        raise ValueError(f"无法解析时间单位：{units!r}")
-    unit, origin = units_l.split(" since ", 1)
-    origin_ts = pd.Timestamp(origin)
-    unit = unit.strip().lower()
-    vals = np.asarray(values)
-    if unit.startswith("hour"):
-        return pd.DatetimeIndex(origin_ts + pd.to_timedelta(vals, unit="h"))
-    if unit.startswith("day"):
-        return pd.DatetimeIndex(origin_ts + pd.to_timedelta(vals, unit="D"))
-    if unit.startswith("second"):
-        return pd.DatetimeIndex(origin_ts + pd.to_timedelta(vals, unit="s"))
-    raise ValueError(f"不支持的时间单位：{units!r}")
+def _decode_time(values: np.ndarray, units: str, calendar: str = "standard") -> pd.DatetimeIndex:
+    # 委托给 cf_low_resource.decode_time，统一日历处理（非标准日历需 cftime 解码）。
+    return cf_low_resource.decode_time(values, units, calendar=calendar)
 
 
 def _read_time(f: h5py.File) -> pd.DatetimeIndex:
-    units = _decode_attr(f["time"].attrs["units"])
-    return _decode_time(f["time"][:], units)
+    attrs = f["time"].attrs
+    return _decode_time(
+        f["time"][:],
+        _decode_attr(attrs["units"]),
+        _decode_attr(attrs.get("calendar", "standard")),
+    )
 
 
 def _infer_timestep_hours(times: pd.DatetimeIndex) -> float:

@@ -10,6 +10,7 @@ import tempfile
 
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 
+import cftime
 import h5py
 import numpy as np
 import pandas as pd
@@ -99,15 +100,45 @@ def open_h5(path: str | Path, mode: str):
         return h5py.File(path, mode)
 
 
-def decode_time(values: np.ndarray, units: str) -> pd.DatetimeIndex:
-    """解析 CF 文件中的数值时间轴。"""
+# 非-公历日历：必须经 cftime 解码后按字段转 Timestamp。否则「原点+经过时间」的
+# 公历运算在不同原点（如 CF 的 "days since 1850" 与 E1 的 "hours since 2015"）
+# 之间会因跨越闰年数不同而漂移，导致时间轴无法精确对齐。
+_NONSTANDARD_CALENDARS = {
+    "noleap", "365_day", "365day",
+    "all_leap", "366_day", "366day",
+    "360_day", "360day",
+    "julian",
+}
+
+
+def _cftime_to_timestamp(dates) -> pd.DatetimeIndex:
+    """把 cftime 日期按 (年,月,日,时,分,秒) 字段映射到 pandas Timestamp。
+
+    非标准日历没有等价的 pandas 表示；按字段保留可在不同原点/日历间保持一致的
+    时间键（供精确匹配），年份、月份、小时标签也保持正确。
+    """
+    return pd.DatetimeIndex(
+        pd.Timestamp(d.year, d.month, d.day, d.hour, d.minute, d.second)
+        for d in dates
+    )
+
+
+def decode_time(values: np.ndarray, units: str, calendar: str = "standard") -> pd.DatetimeIndex:
+    """解析 CF 文件中的数值时间轴。
+
+    非标准日历（noleap/365_day 等）经 cftime 解码后按字段转 Timestamp；
+    标准日历沿用「原点+经过时间」的公历运算。
+    """
     text = units.strip()
     if " since " not in text:
         raise ValueError(f"无法解析时间单位：{units!r}")
+    cal = (calendar or "standard").strip().lower()
+    vals = np.asarray(values)
+    if cal in _NONSTANDARD_CALENDARS:
+        return _cftime_to_timestamp(cftime.num2date(vals, units, calendar=cal))
     unit, origin = text.split(" since ", 1)
     origin_ts = pd.Timestamp(origin)
     unit = unit.strip().lower()
-    vals = np.asarray(values)
     if unit.startswith("hour"):
         return pd.DatetimeIndex(origin_ts + pd.to_timedelta(vals, unit="h"))
     if unit.startswith("day"):
@@ -119,7 +150,12 @@ def decode_time(values: np.ndarray, units: str) -> pd.DatetimeIndex:
 
 def read_time(h5: h5py.File) -> pd.DatetimeIndex:
     """读取 HDF5/NetCDF 文件的 time 坐标。"""
-    return decode_time(h5["time"][:], decode_attr(h5["time"].attrs["units"]))
+    attrs = h5["time"].attrs
+    return decode_time(
+        h5["time"][:],
+        decode_attr(attrs["units"]),
+        decode_attr(attrs.get("calendar", "standard")),
+    )
 
 
 def infer_timestep_hours(times: pd.DatetimeIndex) -> float:
