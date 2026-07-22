@@ -195,6 +195,7 @@ def classify_unit(
     queue_record: dict[str, str] | None,
     accounting_record: dict[str, str] | None,
     previous: dict | None,
+    has_stations: bool = True,
 ) -> tuple[str, str]:
     """按调度状态和非空文件证据分类一个单元。"""
     if queue_record and queue_record["state"] in ACTIVE_STATES:
@@ -208,11 +209,19 @@ def classify_unit(
         if state == "COMPLETED":
             if output_exists:
                 return "SUCCEEDED", "COMPLETED + nonempty output"
+            if stage == "E2" and not has_stations:
+                return "SKIPPED_NO_STATIONS", "COMPLETED + no stations; no output expected"
             return "INCOMPLETE_OUTPUT", "COMPLETED but output missing/empty"
         return "UNKNOWN", state
     if previous and previous.get("job_id"):
         if previous.get("classification") in {"SUCCEEDED", "SUCCEEDED_RECORDED"} and output_exists:
             return "SUCCEEDED_RECORDED", "local snapshot + nonempty output"
+        if (
+            stage == "E2"
+            and not has_stations
+            and previous.get("classification") == "SKIPPED_NO_STATIONS"
+        ):
+            return "SKIPPED_NO_STATIONS", "local snapshot + no stations"
         return "UNKNOWN_HISTORY", "已有提交记录但 sacct/squeue 无记录"
     if stage == "E1" and output_exists:
         return "SUCCEEDED_PREEXISTING", "nonempty output (no scheduler record)"
@@ -275,6 +284,8 @@ def _write_completion(path: Path, rows: list[dict[str, str]]) -> None:
         "scenario",
         "tech",
         "years",
+        "station_count",
+        "has_stations",
         "job_name",
         "job_id",
         "scheduler_state",
@@ -365,14 +376,9 @@ def monitor_once(
         {unit["unit_id"]: unit["expected_output"] for unit in units},
         timeout=args.ssh_timeout,
     )
+    # 启动 E2 监控器本身就是人工阶段授权。缺失 E1 文件可能表示“有场站但
+    # 无 E1 输出”，此时 E2 作业负责创建兼容 NC，不能再用文件存在性作全局闸门。
     e1_ready = True
-    if stage == "E2":
-        prerequisites = _stat_nonempty(
-            args.server,
-            {unit["unit_id"]: unit["e1_expected_output"] for unit in units},
-            timeout=args.ssh_timeout,
-        )
-        e1_ready = all(prerequisites.values())
 
     observed = datetime.now().astimezone().isoformat()
     current: dict[str, dict] = {}
@@ -385,6 +391,7 @@ def monitor_once(
             queue_record=queue.get(name),
             accounting_record=accounting.get(name),
             previous=previous,
+            has_stations=bool(unit.get("has_stations", True)),
         )
         scheduler = queue.get(name) or accounting.get(name) or {}
         current[unit["unit_id"]] = {
@@ -403,7 +410,7 @@ def monitor_once(
         }
 
     stop_reason = ""
-    if not args.no_submit and (stage != "E2" or e1_ready):
+    if not args.no_submit:
         for unit in units:
             record = current[unit["unit_id"]]
             if record["classification"] != "NOT_SUBMITTED":
@@ -437,9 +444,6 @@ def monitor_once(
                 }
             )
             _atomic_json(snapshot_path, snapshot)
-    elif stage == "E2" and not e1_ready:
-        stop_reason = "E2 gate closed: not all E1 outputs are nonempty"
-
     rows: list[dict[str, str]] = []
     for record in current.values():
         classification = record["classification"]
@@ -464,6 +468,8 @@ def monitor_once(
                     "scenario": record["scenario"],
                     "tech": record["tech"],
                     "years": record["years"],
+                    "station_count": record.get("station_count", ""),
+                    "has_stations": record.get("has_stations", ""),
                     "job_name": record["job_name"],
                     "job_id": record["job_id"],
                     "scheduler_state": record["scheduler_state"],

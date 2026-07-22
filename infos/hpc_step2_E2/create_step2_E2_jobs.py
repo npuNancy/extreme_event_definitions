@@ -7,11 +7,14 @@ import shlex
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from infos.hpc_step2_common import (  # noqa: E402
+    SCENARIO_STATIONS,
     campaign_id,
     expand_path,
     expected_output,
@@ -29,6 +32,37 @@ from infos.hpc_step2_common import (  # noqa: E402
     write_manifest,
     write_text,
 )
+from grid_extreme_signals import station_match as sm  # noqa: E402
+
+
+def _build_station_inventory(
+    stations_dir: Path,
+    shp: Path,
+    scenarios: list[str],
+    regions_by_model: dict[str, list[str]],
+    techs: list[str],
+) -> dict[tuple[str, str, str], int]:
+    """预计算 manifest 所需的 ``scenario × region × tech`` 场站数。"""
+    countries = sm.load_country_shapes(shp)
+    station_tables: dict[str, pd.DataFrame] = {
+        scenario: sm.load_stations(stations_dir / SCENARIO_STATIONS[scenario])
+        for scenario in scenarios
+    }
+    regions = sorted({region for values in regions_by_model.values() for region in values})
+    inventory: dict[tuple[str, str, str], int] = {}
+    for region in regions:
+        country_name = sm.bcsd_region_to_ne_name(region)
+        if country_name not in countries:
+            raise KeyError(
+                f"Natural Earth 中没有区域 {region!r} 对应的国家 {country_name!r}"
+            )
+        for scenario in scenarios:
+            for tech in techs:
+                filtered = sm.filter_stations_for_country(
+                    station_tables[scenario], countries[country_name], tech
+                )
+                inventory[(region, scenario, tech)] = len(filtered)
+    return inventory
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-dir", default="~/extreme_event_definitions")
     parser.add_argument("--data-dir", default="~/data/bcsd_outputs")
     parser.add_argument("--cf-root", default="~/data/cfs")
+    parser.add_argument("--stations-dir", default="~/data/stations")
+    parser.add_argument(
+        "--shp",
+        default="~/data/maps/natural_earth/ne_110m_admin_0_countries.shp",
+    )
     parser.add_argument(
         "--threshold-dir",
         default=(
@@ -83,6 +122,8 @@ def run(args: argparse.Namespace) -> Path:
     project_dir = expand_path(args.project_dir)
     data_dir = expand_path(args.data_dir)
     cf_root = expand_path(args.cf_root)
+    stations_dir = expand_path(args.stations_dir)
+    shp = expand_path(args.shp)
     threshold_dir = expand_path(args.threshold_dir)
     output_root = (
         expand_path(args.output_root)
@@ -96,9 +137,18 @@ def run(args: argparse.Namespace) -> Path:
     require_dir(project_dir, label="--project-dir")
     require_dir(data_dir, label="--data-dir")
     require_dir(cf_root, label="--cf-root")
+    require_dir(stations_dir, label="--stations-dir")
     require_dir(threshold_dir, label="--threshold-dir")
     require_file(project_dir / "step2_split_E2_low_resource.py", label="E2 入口")
     require_file(activate_path, label="--activate-path")
+    require_file(shp, label="--shp")
+    for suffix in (".shx", ".dbf"):
+        require_file(shp.with_suffix(suffix), label=f"Natural Earth {suffix}")
+    for scenario in scenarios:
+        require_file(
+            stations_dir / SCENARIO_STATIONS[scenario],
+            label=f"{scenario} 场站 CSV",
+        )
     for scenario in scenarios:
         for tech in techs:
             require_file(
@@ -110,6 +160,9 @@ def run(args: argparse.Namespace) -> Path:
                 label=f"{scenario}/{tech} 阈值",
             )
     regions_by_model = resolve_regions(data_dir, models, args.regions)
+    station_inventory = _build_station_inventory(
+        stations_dir, shp, scenarios, regions_by_model, techs
+    )
 
     selection = {
         "models": models,
@@ -119,11 +172,13 @@ def run(args: argparse.Namespace) -> Path:
         "years": args.years,
         "output_root": str(output_root),
         "threshold_dir": str(threshold_dir),
+        "stations_dir": str(stations_dir),
+        "shp": str(shp),
         "baseline_years": args.baseline_years,
     }
     campaign = campaign_id("E2", selection)
     prefix = f"s2e2_{campaign}_"
-    units: list[dict[str, str]] = []
+    units: list[dict[str, object]] = []
     planned_paths: set[Path] = set()
     scripts_to_write: list[tuple[Path, str, list[str]]] = []
 
@@ -131,6 +186,8 @@ def run(args: argparse.Namespace) -> Path:
         for region in regions_by_model[model]:
             for scenario in scenarios:
                 for tech in techs:
+                    station_csv = stations_dir / SCENARIO_STATIONS[scenario]
+                    station_count = station_inventory[(region, scenario, tech)]
                     name = job_name(
                         "E2", campaign, model, region, scenario, tech, args.years
                     )
@@ -150,6 +207,12 @@ def run(args: argparse.Namespace) -> Path:
                         str(cf_root),
                         "--threshold_dir",
                         str(threshold_dir),
+                        "--stations_csv",
+                        str(station_csv),
+                        "--shp",
+                        str(shp),
+                        "--source",
+                        "regional_bcsd",
                         "--model",
                         model,
                         "--region",
@@ -188,6 +251,8 @@ def run(args: argparse.Namespace) -> Path:
                             "script_path": str(script_path),
                             "e1_expected_output": str(output),
                             "expected_output": str(output),
+                            "station_count": station_count,
+                            "has_stations": station_count > 0,
                             "command": shlex.join(command),
                         }
                     )

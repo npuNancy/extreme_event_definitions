@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import h5py
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -99,9 +101,20 @@ def test_e1_generator_tiny_matrix_and_bash_syntax(tmp_path: Path) -> None:
     subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
 
 
-def test_e2_generator_tiny_matrix_and_paths(tmp_path: Path) -> None:
+def test_e2_generator_tiny_matrix_and_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     tree = _common_tree(tmp_path)
     job_root = tmp_path / "jobs/E2"
+    monkeypatch.setattr(
+        e2_jobs,
+        "_build_station_inventory",
+        lambda stations_dir, shp, scenarios, regions_by_model, techs: {
+            ("Germany", scenario, tech): 2
+            for scenario in scenarios
+            for tech in techs
+        },
+    )
     args = e2_jobs.build_parser().parse_args(
         [
             "--models", "NESM3",
@@ -112,6 +125,8 @@ def test_e2_generator_tiny_matrix_and_paths(tmp_path: Path) -> None:
             "--project-dir", str(PROJECT_ROOT),
             "--data-dir", str(tree["data_dir"]),
             "--cf-root", str(tree["cf_root"]),
+            "--stations-dir", str(tree["stations_dir"]),
+            "--shp", str(tree["shp"]),
             "--threshold-dir", str(tree["thresholds"]),
             "--activate-path", str(tree["activate"]),
             "--job-root", str(job_root),
@@ -127,6 +142,10 @@ def test_e2_generator_tiny_matrix_and_paths(tmp_path: Path) -> None:
         assert unit["expected_output"] == unit["e1_expected_output"]
         assert "/outputs/station_signals/regional_bcsd/NESM3/Germany/" in unit["expected_output"]
         assert "--baseline_years 2015-2024" in unit["command"]
+        assert "--stations_csv " in unit["command"]
+        assert "--shp " in unit["command"]
+        assert unit["station_count"] == 2
+        assert unit["has_stations"] is True
     subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
 
 
@@ -177,19 +196,21 @@ def test_regions_all_supports_canesm5(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("stage", "output_exists", "accounting", "expected"),
+    ("stage", "output_exists", "accounting", "has_stations", "expected"),
     [
-        ("E1", True, None, "SUCCEEDED_PREEXISTING"),
-        ("E2", True, None, "NOT_SUBMITTED"),
-        ("E2", True, {"state": "COMPLETED"}, "SUCCEEDED"),
-        ("E1", False, {"state": "COMPLETED"}, "INCOMPLETE_OUTPUT"),
-        ("E1", True, {"state": "FAILED"}, "FAILED"),
+        ("E1", True, None, True, "SUCCEEDED_PREEXISTING"),
+        ("E2", True, None, True, "NOT_SUBMITTED"),
+        ("E2", True, {"state": "COMPLETED"}, True, "SUCCEEDED"),
+        ("E2", False, {"state": "COMPLETED"}, False, "SKIPPED_NO_STATIONS"),
+        ("E1", False, {"state": "COMPLETED"}, True, "INCOMPLETE_OUTPUT"),
+        ("E1", True, {"state": "FAILED"}, True, "FAILED"),
     ],
 )
 def test_monitor_classification(
     stage: str,
     output_exists: bool,
     accounting: dict[str, str] | None,
+    has_stations: bool,
     expected: str,
 ) -> None:
     classification, _ = classify_unit(
@@ -198,6 +219,7 @@ def test_monitor_classification(
         queue_record=None,
         accounting_record=accounting,
         previous=None,
+        has_stations=has_stations,
     )
     assert classification == expected
 
@@ -238,6 +260,112 @@ def test_e2_processing_failure_exits_nonzero(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(SystemExit) as exc:
         patch_low_resource.main()
     assert exc.value.code == 1
+
+
+def test_e2_unit_without_stations_skips_successfully(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    args = SimpleNamespace(
+        region="Germany",
+        scenario="ssp126",
+        tech="wind",
+    )
+    monkeypatch.setattr(
+        patch_low_resource,
+        "_load_unit_stations",
+        lambda args, region, tech: pd.DataFrame(),
+    )
+    with caplog.at_level("INFO"):
+        assert patch_low_resource._process_unit(args) is False
+    assert "国家内无场站，跳过" in caplog.text
+
+
+def test_e2_creates_low_resource_file_when_e1_output_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cf_file = tmp_path / "solar.nc"
+    with h5py.File(cf_file, "w") as handle:
+        time = handle.create_dataset("time", data=np.array([0.0, 394464.0]))
+        time.attrs["units"] = "hours since 2015-01-01 00:00:00"
+        handle.create_dataset("lat", data=np.array([50.0]))
+        handle.create_dataset("lon", data=np.array([10.0]))
+    threshold_dir = tmp_path / "thresholds"
+    threshold = _touch(
+        threshold_dir
+        / "low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2024.nc"
+    )
+    stations = pd.DataFrame(
+        {
+            "lon": [10.0],
+            "lat": [50.0],
+            "type": ["solar"],
+            "activation_year": [2030],
+            "capacity_gw": [1.0],
+        }
+    )
+    match = SimpleNamespace(
+        stations=stations,
+        valid=np.array([True]),
+        dist_deg=np.array([0.0]),
+        method="nearest",
+    )
+    result = patch_low_resource.cf_low_resource.LowResourceResult(
+        mask=np.ones((2, 1), dtype=np.int8),
+        cf_file=cf_file,
+        timestep_hours=1.0,
+        window_steps=24,
+        grid_shape=(1, 1),
+        lon360=False,
+        threshold_file=threshold,
+        valid=np.array([True]),
+    )
+    monkeypatch.setattr(
+        patch_low_resource.cf_low_resource, "find_cf_file", lambda *a, **k: cf_file
+    )
+    monkeypatch.setattr(
+        patch_low_resource.sm, "match_regular_weighted", lambda *a, **k: match
+    )
+    monkeypatch.setattr(
+        patch_low_resource.cf_low_resource,
+        "compute_station_low_resource",
+        lambda *a, **k: result,
+    )
+    captured: dict = {}
+
+    def fake_write(path, masks, times, match, tech, **kwargs):
+        captured.update(masks=masks, times=times, kwargs=kwargs)
+        Path(path).write_bytes(b"netcdf")
+
+    monkeypatch.setattr(patch_low_resource.sm, "write_station_signals", fake_write)
+    target = tmp_path / "out.nc"
+    args = SimpleNamespace(
+        cf_root=str(tmp_path),
+        source="regional_bcsd",
+        model="CANESM5",
+        years="2015-2060",
+        threshold_dir=str(threshold_dir),
+        baseline_years="2015-2024",
+        spatial_interp="nearest",
+        max_dist=0.15,
+        station_chunk=128,
+        time_chunk=512,
+        stations_csv=str(tmp_path / "stations.csv"),
+        compress_level=4,
+    )
+    assert patch_low_resource._create_low_resource_file(
+        target,
+        args,
+        region="Germany",
+        scenario="ssp126",
+        tech="solar",
+        stations=stations,
+    )
+    assert target.read_bytes() == b"netcdf"
+    np.testing.assert_array_equal(
+        captured["masks"]["signal_low_resource"], np.array([[0], [1]], dtype=np.int8)
+    )
+    assert captured["kwargs"]["supported"] == ["low_resource"]
+    assert captured["kwargs"]["attrs_extra"]["e2_created_without_e1"] == "true"
 
 
 def _monitor_manifest(stage: str, tmp_path: Path) -> dict:
@@ -306,7 +434,7 @@ def test_e1_monitor_submits_only_not_submitted_units(
     assert {record["classification"] for record in snapshot["units"].values()} == {"ACTIVE"}
 
 
-def test_e2_monitor_global_gate_blocks_all_submissions(
+def test_e2_monitor_missing_e1_outputs_does_not_block_submissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _monitor_manifest("E2", tmp_path)
@@ -319,10 +447,13 @@ def test_e2_monitor_global_gate_blocks_all_submissions(
 
     monkeypatch.setattr(monitor_common, "_stat_nonempty", stat_nonempty)
 
-    def unexpected_submit(**kwargs):
-        raise AssertionError("E2 gate closed 时不得提交")
+    submitted: list[str] = []
 
-    monkeypatch.setattr(monitor_common, "_submit_one", unexpected_submit)
+    def submit_one(**kwargs):
+        submitted.append(kwargs["script_path"])
+        return str(200 + len(submitted)), "submitted"
+
+    monkeypatch.setattr(monitor_common, "_submit_one", submit_one)
     snapshot = monitor_common.monitor_once(
         stage="E2",
         state_dir=tmp_path / "state",
@@ -330,5 +461,6 @@ def test_e2_monitor_global_gate_blocks_all_submissions(
         manifest_path="/remote/manifest.json",
         manifest=manifest,
     )
-    assert snapshot["e1_gate_ready"] is False
-    assert "gate closed" in snapshot["stop_reason"]
+    assert snapshot["e1_gate_ready"] is True
+    assert snapshot["stop_reason"] == ""
+    assert len(submitted) == 2

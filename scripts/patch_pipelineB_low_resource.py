@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""临时补写 Pipeline B 场站级低资源事件。
+"""补写 Pipeline B 场站级低资源事件。
 
-该脚本只计算 ``signal_low_resource``，并直接写入已有
-``outputs/station_signals_pipelineB/regional_bcsd/NESM3`` 结果文件。
+该脚本只计算 ``signal_low_resource``。目标 E1 文件存在时原位补写；目标区域
+有场站但 E1 文件不存在时，创建一个只含低资源事件的兼容场站 NetCDF；目标区域
+无对应技术场站时成功跳过。
 """
 from __future__ import annotations
 
@@ -24,8 +25,10 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import registry  # noqa: E402
 from tools import common  # noqa: E402
 from grid_extreme_signals import cf_low_resource  # noqa: E402
+from grid_extreme_signals import station_match as sm  # noqa: E402
 from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("patch_pipelineB_low_resource")
@@ -77,7 +80,7 @@ def nearest_index_regular(grid_lat, grid_lon, sta_lat, sta_lon):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="只补写已有 Pipeline B 文件中的 signal_low_resource。",
+        description="补写 Pipeline B 文件中的 signal_low_resource。",
     )
     p.add_argument("--output_root", default=DEFAULT_OUTPUT_ROOT,
                    help="已有 Pipeline B 结果根目录，指向 source/model 层。")
@@ -85,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="CF 数据根目录，默认 data/cfs。")
     p.add_argument("--threshold_dir", default=DEFAULT_THRESHOLD_DIR,
                    help="ERA5Land SSP 场站稀疏低资源阈值目录。")
+    p.add_argument("--stations_csv",
+                   help="当前 SSP 的场站 CSV；逐单元运行时用于判断无场站和创建新文件。")
+    p.add_argument("--shp",
+                   help="Natural Earth 国家边界 .shp；逐单元运行时必需。")
+    p.add_argument("--source", default="regional_bcsd")
     p.add_argument("--model", default="NESM3")
     p.add_argument("--region", default="all",
                    help="区域名或 all。")
@@ -99,6 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--time_chunk", type=int, default=512,
                    help="从 CF 文件读取时的时间块大小。")
     p.add_argument("--compress_level", type=int, default=4)
+    p.add_argument("--spatial_interp", choices=["nearest", "bilinear"],
+                   default="nearest")
+    p.add_argument("--max_dist", type=float, default=sm.MAX_DIST_DEG)
     p.add_argument("--overwrite", action="store_true",
                    help="若 signal_low_resource 已存在则覆盖。")
     p.add_argument("--dry_run", action="store_true",
@@ -217,6 +228,31 @@ def _parse_station_path(path: Path) -> tuple[str, str, str]:
     else:
         raise ValueError(f"无法从文件名识别技术类型：{path}")
     return region, scenario, tech
+
+
+def _target_path(args, region: str, scenario: str, tech: str) -> Path:
+    y0, y1 = _parse_years(args.years)
+    return (
+        Path(args.output_root)
+        / region
+        / scenario
+        / f"station_signals_{tech}_{args.model}_{region}_{scenario}_{y0}-{y1}.nc"
+    )
+
+
+def _load_unit_stations(args, region: str, tech: str) -> pd.DataFrame:
+    if not args.stations_csv or not args.shp:
+        raise ValueError(
+            "逐单元 E2 运行需要同时提供 --stations_csv 和 --shp"
+        )
+    countries = sm.load_country_shapes(args.shp)
+    country_name = sm.bcsd_region_to_ne_name(region)
+    if country_name not in countries:
+        raise KeyError(
+            f"Natural Earth 中没有区域 {region!r} 对应的国家 {country_name!r}"
+        )
+    stations = sm.load_stations(args.stations_csv)
+    return sm.filter_stations_for_country(stations, countries[country_name], tech)
 
 
 def _cf_subdir(tech: str) -> str:
@@ -466,9 +502,187 @@ def _process_file(path: Path, args) -> bool:
         return True
 
 
+def _create_low_resource_file(
+    path: Path,
+    args,
+    *,
+    region: str,
+    scenario: str,
+    tech: str,
+    stations: pd.DataFrame,
+) -> bool:
+    """E1 文件缺失时创建只含 ``signal_low_resource`` 的兼容文件。"""
+    cf_file = cf_low_resource.find_cf_file(
+        args.cf_root,
+        args.source,
+        args.model,
+        scenario,
+        tech,
+        region=region,
+        years=args.years,
+    )
+    if cf_file is None:
+        raise FileNotFoundError(
+            f"[{region}/{scenario}/{tech}] 未找到目标容量因子文件：{args.cf_root}"
+        )
+    threshold_file = cf_low_resource.sparse_threshold_file_for_scenario_tech(
+        args.threshold_dir,
+        scenario,
+        tech,
+        args.baseline_years or "2015-2024",
+    )
+    if not threshold_file.exists():
+        threshold_file = cf_low_resource.threshold_file_for_tech(
+            args.threshold_dir,
+            tech,
+            args.baseline_years or "2015-2024",
+        )
+    if not threshold_file.exists():
+        raise FileNotFoundError(
+            f"[{region}/{scenario}/{tech}] 未找到 ERA5Land 阈值文件：{threshold_file}"
+        )
+
+    y0, y1 = _parse_years(args.years)
+    with cf_low_resource.open_h5(cf_file, "r") as cf:
+        cf_times = cf_low_resource.read_time(cf)
+        lat = cf["lat"][:]
+        lon = cf["lon"][:]
+    year_mask = (cf_times.year >= y0) & (cf_times.year <= y1)
+    out_times = cf_times[year_mask]
+    if out_times.empty or int(out_times.year.min()) != y0 or int(out_times.year.max()) != y1:
+        raise ValueError(
+            f"[{region}/{scenario}/{tech}] CF 时间轴未完整覆盖请求边界 {y0}-{y1}"
+        )
+
+    match = sm.match_regular_weighted(
+        lat,
+        lon,
+        stations,
+        method=args.spatial_interp,
+        max_dist=args.max_dist,
+    )
+    result = cf_low_resource.compute_station_low_resource(
+        cf_file,
+        tech,
+        out_times,
+        stations["lat"].to_numpy(np.float64),
+        stations["lon"].to_numpy(np.float64),
+        threshold_file=threshold_file,
+        max_dist=args.max_dist,
+        spatial_interp=args.spatial_interp,
+        station_chunk=args.station_chunk,
+        time_chunk=args.time_chunk,
+    )
+    active = (
+        out_times.year.to_numpy()[:, None]
+        >= stations["activation_year"].to_numpy(np.int64)[None, :]
+    )
+    valid = match.valid.copy()
+    if result.valid is not None:
+        valid &= result.valid
+    signal = result.mask.astype(bool) & active & valid[None, :]
+
+    skipped = sorted(registry.SIMPLE[tech].keys())
+    reason = "E1 输出不存在；E2 创建仅含 low_resource 的兼容文件"
+    attrs_extra = {
+        **cf_low_resource.attrs(result),
+        "e2_created_without_e1": "true",
+        "e2_creation_reason": reason,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix=path.name + ".tmp.", suffix=".nc", dir=path.parent, delete=False
+    )
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    try:
+        sm.write_station_signals(
+            temp_path,
+            {"signal_low_resource": signal.astype(np.int8)},
+            out_times.to_numpy(),
+            match,
+            tech,
+            source=args.source,
+            model=args.model,
+            region=region,
+            scenario=scenario,
+            source_csv=os.path.basename(args.stations_csv),
+            pipeline="B",
+            supported=["low_resource"],
+            skipped=skipped,
+            skipped_reasons={event: reason for event in skipped},
+            max_dist=args.max_dist,
+            activation_mask_on=True,
+            compress_level=args.compress_level,
+            attrs_extra=attrs_extra,
+        )
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    logger.info(
+        "[%s/%s/%s] E1 输出不存在，已新建 low_resource 文件 %s；场站=%d",
+        region,
+        scenario,
+        tech,
+        path,
+        len(stations),
+    )
+    return True
+
+
+def _process_unit(args) -> bool:
+    region = args.region
+    scenario = args.scenario
+    tech = args.tech
+    stations = _load_unit_stations(args, region, tech)
+    if stations.empty:
+        logger.info(
+            "[%s/%s/%s] 国家内无场站，跳过",
+            region,
+            scenario,
+            tech,
+        )
+        return False
+    path = _target_path(args, region, scenario, tech)
+    if path.exists():
+        return _process_file(path, args)
+    return _create_low_resource_file(
+        path,
+        args,
+        region=region,
+        scenario=scenario,
+        tech=tech,
+        stations=stations,
+    )
+
+
 def main() -> None:
     args = build_parser().parse_args()
     setup_logging("patch_pipelineB_low_resource")
+    explicit_unit = (
+        args.region != "all"
+        and args.scenario != "all"
+        and args.tech != "both"
+    )
+    if explicit_unit:
+        if args.dry_run:
+            logger.info("逐单元 dry-run：%s", _target_path(
+                args, args.region, args.scenario, args.tech
+            ))
+            return
+        try:
+            _process_unit(args)
+        except Exception:
+            logger.exception(
+                "[%s/%s/%s] 处理失败",
+                args.region,
+                args.scenario,
+                args.tech,
+            )
+            raise SystemExit(1)
+        return
+
     files = _find_station_files(args)
     logger.info("待处理文件数：%d", len(files))
     for p in files:

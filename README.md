@@ -139,9 +139,12 @@ python step2_split_E2_low_resource.py \
   --output_root outputs/station_signals/regional_bcsd/NESM3 \
   --cf_root data/cfs \
   --threshold_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024 \
+  --stations_csv data/stations/stations_SSP1-2.6.csv \
+  --shp data/maps/natural_earth/ne_110m_admin_0_countries.shp \
   --model NESM3 \
+  --region Germany \
   --scenario ssp126 \
-  --tech both \
+  --tech wind \
   --years 2030-2060 \
   --overwrite
 ```
@@ -152,7 +155,7 @@ python step2_split_E2_low_resource.py \
   `<入口名>_YYYYMMDD_HHMMSS.log`；日志行时间戳格式为 `YYYY-MM-DD HH:MM:SS`。
 - `step2_complete_extreme_events.py` 会调用场站流程并默认计算 `low_resource`。
 - `step2_split_E1_weather_extremes.py` 会强制附加 `--no_low_resource`。
-- `step2_split_E2_low_resource.py` 会读取 E1 输出文件中的 `match_method`，确保低资源目标 CF 抽取方式与 E1 一致。
+- `step2_split_E2_low_resource.py` 会先按 SSP、国家和技术类型筛选场站：无场站时成功跳过；有场站且 E1 文件存在时读取其中的 `match_method` 后补写；有场站但 E1 文件缺失时新建只含 `signal_low_resource` 的兼容文件。
 
 ## 运行示例
 
