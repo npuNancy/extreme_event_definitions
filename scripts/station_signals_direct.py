@@ -156,8 +156,11 @@ def _activation_time_mask(times: np.ndarray, activation_years: np.ndarray,
     """(T, n_sta) bool：场站在该时刻已投产则为 True。"""
     if not enabled:
         return np.ones((times.shape[0], activation_years.shape[0]), dtype=bool)
-    years = pd.DatetimeIndex(times).year.to_numpy(np.int64)[:, None]
-    return years >= activation_years[None, :]
+    if times.dtype.kind == "O":  # cftime 日历（如 NoLeap）以 object 数组承载，pandas 无法解析
+        years = np.array([t.year for t in times], dtype=np.int64)
+    else:
+        years = pd.DatetimeIndex(times).year.to_numpy(np.int64)
+    return years[:, None] >= activation_years[None, :]
 
 
 def _skip(path: str, overwrite: bool) -> bool:
