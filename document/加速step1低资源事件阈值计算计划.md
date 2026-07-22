@@ -2,7 +2,7 @@
 
 ## 1. 背景与瓶颈
 
-当前 `step1_low_resource_thresholds.py` 用 ERA5Land 2015-2025 风光 CF 为 SSP 场站计算稀疏低资源阈值。
+当前 `step1_low_resource_thresholds.py` 用 ERA5Land 2015-2024 风光 CF 为 SSP 场站计算稀疏低资源阈值。
 
 已确认 ERA5Land CF 文件的 HDF5 chunk 方式是：
 
@@ -94,7 +94,7 @@ cf(time, station)
 cache_kind = era5land_station_cf
 scenario = ssp126 | ssp245 | ssp585
 tech = wind | solar
-baseline_years = 2015-2025
+baseline_years = 2015-2024
 threshold_interp = nearest_valid | bilinear
 interpolation_method = nearest_valid | bilinear_4point
 source_files = ...
@@ -322,8 +322,8 @@ compute_thresholds_from_station_cf_cache(...)
 修改完成后重新运行前，先确认没有半成品：
 
 ```bash
-find outputs/low_resource_thresholds -name 'low_resource_threshold_sparse_ssp126_*_ERA5Land_2015-2025.nc'
-find outputs/cache/era5land_station_cf -name 'station_cf_ssp126_*_ERA5Land_2015-2025_*.nc'
+find outputs/low_resource_thresholds -name 'low_resource_threshold_sparse_ssp126_*_ERA5Land_2015-2024.nc'
+find outputs/cache/era5land_station_cf -name 'station_cf_ssp126_*_ERA5Land_2015-2024_*.nc'
 ```
 
 推荐串行运行：
@@ -332,13 +332,13 @@ find outputs/cache/era5land_station_cf -name 'station_cf_ssp126_*_ERA5Land_2015-
 .venv/bin/python step1_low_resource_thresholds.py \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --tech wind \
-  --baseline_years 2015-2025 \
+  --baseline_years 2015-2024 \
   --overwrite
 
 .venv/bin/python step1_low_resource_thresholds.py \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --tech solar \
-  --baseline_years 2015-2025 \
+  --baseline_years 2015-2024 \
   --overwrite
 ```
 

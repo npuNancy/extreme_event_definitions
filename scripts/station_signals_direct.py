@@ -204,14 +204,14 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
             bundle = (adapter.load_wind_weather(task) if tech == "wind"
                       else adapter.load_solar_weather(task))
         except (FileNotFoundError, ValueError) as e:
-            logger.warning("[%s/%s/%d] 输入缺失：%s，停止年份循环", region, tech, year, e)
-            break
+            raise RuntimeError(
+                f"[{region}/{tech}/{year}] 无法加载请求年份的必要输入：{e}"
+            ) from e
 
         time_name, lat_name, lon_name = _bundle_spatial_axes(bundle)
         times = bundle.dataset[time_name].values
         if times.size == 0:
-            logger.warning("[%s/%d] 时间轴为空，跳过该年", region, year)
-            continue
+            raise RuntimeError(f"[{region}/{tech}/{year}] 请求年份的时间轴为空")
 
         # 每个区域/技术只匹配一次（网格跨年份不变）
         if match is None:
@@ -234,9 +234,10 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
 
         weather = _gather_weather(bundle, match)
         if not weather:
-            logger.warning("[%s/%s/%d] 未提取到气象变量，跳过该年", region, tech, year)
-            continue
+            raise RuntimeError(f"[{region}/{tech}/{year}] 未提取到任何气象变量")
         masks = registry.simple_signals(tech, weather, skip_missing=True)
+        if not masks:
+            raise RuntimeError(f"[{region}/{tech}/{year}] 未生成任何普通极端事件信号")
         for name, arr in masks.items():
             masks_acc.setdefault(name, []).append(arr.astype(bool))
         times_acc.append(times)
@@ -272,14 +273,14 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
                 args.lowres_threshold_dir,
                 scenario,
                 tech,
-                args.lowres_baseline_years or "2015-2025",
+                args.lowres_baseline_years or "2015-2024",
             )
             if not threshold_file.exists():
                 # 新流程默认使用稀疏阈值；保留旧完整阈值文件名兼容手工测试。
                 threshold_file = cf_low_resource.threshold_file_for_tech(
                     args.lowres_threshold_dir,
                     tech,
-                    args.lowres_baseline_years or "2015-2025",
+                    args.lowres_baseline_years or "2015-2024",
                 )
             if not threshold_file.exists():
                 lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"

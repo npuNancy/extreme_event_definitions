@@ -39,7 +39,7 @@ def _write_sparse_threshold(path: Path, tech: str, threshold_value: float) -> No
     with h5py.File(path, "w") as f:
         f.attrs["threshold_kind"] = np.bytes_("sparse_station")
         f.attrs["threshold_source"] = np.bytes_("ERA5Land")
-        f.attrs["baseline_years_effective"] = np.bytes_("2015-2025")
+        f.attrs["baseline_years_effective"] = np.bytes_("2015-2024")
         f.attrs["tech"] = np.bytes_(tech)
         f.create_dataset("station", data=np.array([0], dtype=np.int32))
         f.create_dataset("station_lat", data=np.array([0.25], dtype=np.float32))
@@ -276,7 +276,7 @@ def test_station_low_resource_uses_sparse_threshold(tmp_path):
 
     assert result.threshold_file == threshold_file
     assert result.threshold_source == "ERA5Land"
-    assert result.threshold_baseline_years == "2015-2025"
+    assert result.threshold_baseline_years == "2015-2024"
     assert result.valid.tolist() == [True]
     assert result.mask.dtype == np.int8
     assert result.mask.shape == (16, 1)

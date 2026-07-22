@@ -25,16 +25,16 @@ from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("precompute_low_resource_thresholds")
 
-DEFAULT_OUTPUT_DIR = "outputs/low_resource_thresholds/ERA5Land_2015-2025"
+DEFAULT_OUTPUT_DIR = "outputs/low_resource_thresholds/ERA5Land_2015-2024"
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="基于 ERA5Land 2015-2025 CF 预计算低资源 clim/threshold。",
+        description="基于 ERA5Land 2015-2024 CF 预计算低资源 clim/threshold。",
     )
     p.add_argument("--cf_root", default="data/cfs")
     p.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
-    p.add_argument("--baseline_years", default="2015-2025")
+    p.add_argument("--baseline_years", default="2015-2024")
     p.add_argument("--tech", choices=["wind", "solar", "both"], default="both")
     p.add_argument("--lat_chunk", type=int, default=1)
     p.add_argument("--lon_chunk", type=int, default=360)

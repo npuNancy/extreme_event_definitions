@@ -156,13 +156,13 @@ def cf_var(tech: str) -> str:
 
 def default_threshold_dir() -> Path:
     """返回默认 ERA5Land 低资源阈值目录。"""
-    return Path("outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025")
+    return Path("outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024")
 
 
 def threshold_file_for_tech(
     threshold_dir: str | Path,
     tech: str,
-    baseline_years: str = "2015-2025",
+    baseline_years: str = "2015-2024",
 ) -> Path:
     """返回指定技术类型的 ERA5Land 阈值文件路径。"""
     return (
@@ -175,7 +175,7 @@ def sparse_threshold_file_for_scenario_tech(
     threshold_dir: str | Path,
     scenario: str,
     tech: str,
-    baseline_years: str = "2015-2025",
+    baseline_years: str = "2015-2024",
 ) -> Path:
     """返回 SSP 场站稀疏 ERA5Land 阈值文件路径。"""
     return (

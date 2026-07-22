@@ -37,7 +37,7 @@ data/stations/stations_SSP5-8.5.csv
 统一放在：
 
 ```text
-outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025/
+outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024/
 ```
 
 ### 输出文件
@@ -45,12 +45,12 @@ outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025/
 按 SSP + 技术类型拆分：
 
 ```text
-low_resource_threshold_sparse_ssp126_wind_ERA5Land_2015-2025.nc
-low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2025.nc
-low_resource_threshold_sparse_ssp245_wind_ERA5Land_2015-2025.nc
-low_resource_threshold_sparse_ssp245_solar_ERA5Land_2015-2025.nc
-low_resource_threshold_sparse_ssp585_wind_ERA5Land_2015-2025.nc
-low_resource_threshold_sparse_ssp585_solar_ERA5Land_2015-2025.nc
+low_resource_threshold_sparse_ssp126_wind_ERA5Land_2015-2024.nc
+low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2024.nc
+low_resource_threshold_sparse_ssp245_wind_ERA5Land_2015-2024.nc
+low_resource_threshold_sparse_ssp245_solar_ERA5Land_2015-2024.nc
+low_resource_threshold_sparse_ssp585_wind_ERA5Land_2015-2024.nc
+low_resource_threshold_sparse_ssp585_solar_ERA5Land_2015-2024.nc
 ```
 
 ## 3. 稀疏阈值文件结构
@@ -91,8 +91,8 @@ threshold_kind = sparse_station
 threshold_source = ERA5Land
 scenario = ssp126 | ssp245 | ssp585
 tech = wind | solar
-baseline_years_requested = 2015-2025
-baseline_years_effective = 2015-2025
+baseline_years_requested = 2015-2024
+baseline_years_effective = 2015-2024
 interpolation_method = nearest_valid | bilinear_4point
 window_hours = 24
 percentile = 5
@@ -166,9 +166,9 @@ scripts/precompute_station_low_resource_thresholds.py
 --stations_csv data/stations/stations_SSP1-2.6.csv
 --scenario ssp126
 --tech wind|solar|both
---baseline_years 2015-2025
+--baseline_years 2015-2024
 --threshold_interp nearest_valid|bilinear
---output_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025
+--output_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024
 --station_chunk 128
 --time_chunk 512
 --allow_incomplete
@@ -176,7 +176,7 @@ scripts/precompute_station_low_resource_thresholds.py
 --dry_run
 ```
 
-完整 2015-2025 示例：
+完整 2015-2024 示例：
 
 ```bash
 python scripts/precompute_station_low_resource_thresholds.py \
@@ -184,7 +184,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --scenario ssp126 \
   --tech both \
-  --baseline_years 2015-2025
+  --baseline_years 2015-2024
 ```
 
 只用 2015-2024 示例：

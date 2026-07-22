@@ -19,6 +19,12 @@ ref_code
 
 run_*.sh
 infos/hpc_step1/completion_status
+infos/hpc_step2_E1/completion_status/*.csv
+infos/hpc_step2_E1/completion_status/*.json
+infos/hpc_step2_E1/completion_status/*.lock
+infos/hpc_step2_E2/completion_status/*.csv
+infos/hpc_step2_E2/completion_status/*.json
+infos/hpc_step2_E2/completion_status/*.lock
 
 # Output directories
 weather_nc/

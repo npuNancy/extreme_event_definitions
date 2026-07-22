@@ -7,7 +7,7 @@
 ```
 extreme_event_definitions/
   README.md
-  step1_low_resource_thresholds.py          # ① ERA5Land 2015-2025 风光 CF 预计算低资源阈值
+  step1_low_resource_thresholds.py          # ① ERA5Land 2015-2024 风光 CF 预计算低资源阈值
   step2_complete_extreme_events.py          # 两阶段②：未来极端事件，包含 low_resource
   step2_split_E1_weather_extremes.py        # 三阶段②：未来极端事件，不包含 low_resource
   step2_split_E2_low_resource.py            # 三阶段③：补写未来 low_resource 到三阶段②输出
@@ -75,7 +75,7 @@ extreme_event_definitions/
 
 ## 推荐流程入口
 
-当前低资源事件使用 ERA5Land 2015-2025 风光 CF 先计算阈值；未来模式/SSP
+当前低资源事件使用 ERA5Land 2015-2024 风光 CF 先计算阈值；未来模式/SSP
 只负责被判定是否发生事件。项目根目录提供两种入口组合。
 
 `step1_low_resource_thresholds.py` 计算 ERA5Land 稀疏阈值时默认使用
@@ -96,7 +96,7 @@ python step1_low_resource_thresholds.py \
   --cf_root data/cfs \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --tech both \
-  --baseline_years 2015-2025
+  --baseline_years 2015-2024
 
 python step2_complete_extreme_events.py \
   --source regional_bcsd \
@@ -121,7 +121,7 @@ python step1_low_resource_thresholds.py \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --scenario ssp126 \
   --tech both \
-  --baseline_years 2015-2025
+  --baseline_years 2015-2024
 
 python step2_split_E1_weather_extremes.py \
   --source regional_bcsd \
@@ -138,7 +138,7 @@ python step2_split_E1_weather_extremes.py \
 python step2_split_E2_low_resource.py \
   --output_root outputs/station_signals/regional_bcsd/NESM3 \
   --cf_root data/cfs \
-  --threshold_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025 \
+  --threshold_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024 \
   --model NESM3 \
   --scenario ssp126 \
   --tech both \
@@ -234,7 +234,7 @@ python scripts/station_signals_direct.py \
 | `--overwrite` | `False` | 覆盖已有输出 |
 | `--dry_run` | `False` | 仅打印任务计划 |
 | `--spatial_interp` | `nearest` | 场站到网格数据抽取方法；规则经纬度网格支持 `nearest`/`bilinear`，NAM-12 当前只支持 `nearest` |
-| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025` | ERA5Land 2015-2025 SSP 场站稀疏低资源阈值目录 |
+| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024` | ERA5Land 2015-2024 SSP 场站稀疏低资源阈值目录 |
 
 场站级低资源阈值需先按 SSP + 技术类型预计算，例如：
 
@@ -244,7 +244,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --scenario ssp126 \
   --tech both \
-  --baseline_years 2015-2025
+  --baseline_years 2015-2024
 ```
 
 ### 天气中间文件
@@ -274,7 +274,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 | 待办 | 卡点 |
 |---|---|
 | **场站级信号**（`station_signals_direct.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
-| **低资源事件**（`signal_low_resource`） | ✅ 场站级默认启用；依赖目标 CF 文件和 ERA5Land 2015-2025 阈值文件 |
+| **低资源事件**（`signal_low_resource`） | ✅ 场站级默认启用；依赖目标 CF 文件和 ERA5Land 2015-2024 阈值文件 |
 | **MERRA-2 沙尘全网格重采样** | 第一阶段只做简单最近邻 |
 | **跨区域拼接** | — |
 | **不同来源结果的统一评估** | — |
@@ -284,7 +284,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 1. **3 小时数据与逐小时数据的暴露率不能直接比较**：BCSD/CMFD/CORDEX 数据的时间分辨率不同，极端事件的暴露小时数不能跨分辨率直接比较。
 2. **NAM-12 使用旋转极网格**：输出维度为 `(time, rlat, rlon)`，保留二维 `lat(rlat, rlon)` 和 `lon(rlat, rlon)` 辅助坐标。
 3. **ERA5-Land 累积量需要跨月边界反累积**：`tp` 和 `ssrd` 是日内累积量，在月初 00:00 需要读取前月最后一小时作为差分起点。
-4. **低资源事件阈值固定**：阈值来自 ERA5Land 2015-2025 CF 预计算结果；不同模式/SSP 不再用自身 CF 重新估计阈值。
+4. **低资源事件阈值固定**：阈值来自 ERA5Land 2015-2024 CF 预计算结果；不同模式/SSP 不再用自身 CF 重新估计阈值。
 5. **旧真实场站脚本已迁移到 `legacy_station_pipeline/`**：推荐使用 `python -m legacy_station_pipeline.xxx` 运行。
 6. **默认仅写出 `extreme_signals_*.nc`**：只有显式传入 `--save_weather` 才保存 `weather_*.nc`。
 

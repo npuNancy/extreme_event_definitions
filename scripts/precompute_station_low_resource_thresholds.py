@@ -26,7 +26,7 @@ from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("precompute_station_low_resource_thresholds")
 
-DEFAULT_OUTPUT_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025"
+DEFAULT_OUTPUT_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024"
 DEFAULT_STATION_CF_CACHE_DIR = "outputs/cache/era5land_station_cf"
 STATION_KEY_DECIMALS = 5
 
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scenario", default=None,
                    help="ssp126/ssp245/ssp585；省略时从 stations_csv 文件名推断。")
     p.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
-    p.add_argument("--baseline_years", default="2015-2025")
+    p.add_argument("--baseline_years", default="2015-2024")
     p.add_argument("--tech", choices=["wind", "solar", "both"], default="both")
     p.add_argument(
         "--threshold_interp",

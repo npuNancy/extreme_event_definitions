@@ -2,7 +2,7 @@
 
 ## 1. 背景
 
-`step1_low_resource_thresholds.py` 用 ERA5Land 2015-2025 风光 CF 为 SSP 场站计算稀疏低资源阈值。
+`step1_low_resource_thresholds.py` 用 ERA5Land 2015-2024 风光 CF 为 SSP 场站计算稀疏低资源阈值。
 
 阈值只取决于：
 
@@ -55,23 +55,23 @@ python step1_low_resource_thresholds.py \
   --cf_root data/cfs \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --tech both \
-  --baseline_years 2015-2025 \
+  --baseline_years 2015-2024 \
   --overwrite
 
 python step1_low_resource_thresholds.py \
   --cf_root data/cfs \
   --stations_csv data/stations/stations_SSP2-4.5.csv \
   --tech both \
-  --baseline_years 2015-2025 \
+  --baseline_years 2015-2024 \
   --overwrite
 ```
 
 第二条命令默认尝试读取：
 
 ```text
-outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025/
-  low_resource_threshold_sparse_ssp126_wind_ERA5Land_2015-2025.nc
-  low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2025.nc
+outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024/
+  low_resource_threshold_sparse_ssp126_wind_ERA5Land_2015-2024.nc
+  low_resource_threshold_sparse_ssp126_solar_ERA5Land_2015-2024.nc
 ```
 
 ## 5. 源文件完整性与兼容性检查

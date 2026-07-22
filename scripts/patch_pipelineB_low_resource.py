@@ -35,7 +35,7 @@ DEFAULT_OUTPUT_ROOT = (
     "outputs/station_signals/regional_bcsd/NESM3"
 )
 DEFAULT_CF_ROOT = "data/cfs"
-DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2025"
+DEFAULT_THRESHOLD_DIR = "outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024"
 
 
 def lon_to_180(lon):
@@ -389,24 +389,25 @@ def _process_file(path: Path, args) -> bool:
     region, scenario, tech = _parse_station_path(path)
     cf_file = _find_cf_file(Path(args.cf_root), args.model, region, scenario, tech)
     if cf_file is None:
-        logger.warning("[%s/%s/%s] 未找到 CF 文件，跳过", region, scenario, tech)
-        return False
+        raise FileNotFoundError(
+            f"[{region}/{scenario}/{tech}] 未找到目标容量因子文件：{args.cf_root}"
+        )
     threshold_file = cf_low_resource.sparse_threshold_file_for_scenario_tech(
         args.threshold_dir,
         scenario,
         tech,
-        args.baseline_years or "2015-2025",
+        args.baseline_years or "2015-2024",
     )
     if not threshold_file.exists():
         threshold_file = cf_low_resource.threshold_file_for_tech(
             args.threshold_dir,
             tech,
-            args.baseline_years or "2015-2025",
+            args.baseline_years or "2015-2024",
         )
     if not threshold_file.exists():
-        logger.warning("[%s/%s/%s] 未找到 ERA5Land 阈值文件 %s，跳过",
-                       region, scenario, tech, threshold_file)
-        return False
+        raise FileNotFoundError(
+            f"[{region}/{scenario}/{tech}] 未找到 ERA5Land 阈值文件：{threshold_file}"
+        )
 
     logger.info("[%s/%s/%s] 处理 %s", region, scenario, tech, path)
     with _open_h5(path, "r+") as out:
@@ -474,6 +475,10 @@ def main() -> None:
         logger.info("  %s", p)
     if args.dry_run:
         return
+    if not files:
+        raise FileNotFoundError(
+            "未找到待补写的 E1 场站信号文件；请确认 E1 已完成及筛选参数一致"
+        )
 
     done = 0
     failed = 0
@@ -485,6 +490,8 @@ def main() -> None:
             failed += 1
             logger.exception("[%s] 处理失败，继续下一个文件", p)
     logger.info("完成写入文件数：%d/%d，失败文件数：%d", done, len(files), failed)
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

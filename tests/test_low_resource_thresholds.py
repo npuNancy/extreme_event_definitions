@@ -26,7 +26,7 @@ def _write_threshold(path: Path, tech: str, threshold_value: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
         f.attrs["threshold_source"] = np.bytes_("ERA5Land")
-        f.attrs["baseline_years_effective"] = np.bytes_("2015-2025")
+        f.attrs["baseline_years_effective"] = np.bytes_("2015-2024")
         f.attrs["resource_variable"] = np.bytes_("wind_cf" if tech == "wind" else "solar_cf")
         f.create_dataset("lat", data=np.array([10.0], dtype=np.float32))
         f.create_dataset("lon", data=np.array([100.0], dtype=np.float32))
@@ -91,7 +91,7 @@ def test_station_low_resource_uses_external_threshold(tmp_path):
 
     assert result.threshold_file == threshold_file
     assert result.threshold_source == "ERA5Land"
-    assert result.threshold_baseline_years == "2015-2025"
+    assert result.threshold_baseline_years == "2015-2024"
     assert result.mask.dtype == np.int8
     assert result.mask.shape == (16, 1)
     assert result.mask[:, 0].sum() > 0
