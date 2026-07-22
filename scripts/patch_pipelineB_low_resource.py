@@ -128,7 +128,8 @@ def _decode_attr(value) -> str:
 
 
 def _set_str_attr(obj, key: str, value: str) -> None:
-    obj.attrs[key] = np.bytes_(value)
+    # np.bytes_ 默认 ASCII 编码，无法处理非 ASCII 字符（如 "México" 的 é）；改用 UTF-8 字节
+    obj.attrs[key] = np.bytes_(str(value).encode("utf-8"))
 
 
 def _open_h5(path: Path, mode: str):
