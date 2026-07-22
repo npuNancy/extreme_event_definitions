@@ -177,3 +177,14 @@ JSON 快照与 CSV 状态是运行时文件，不提交 Git；监控程序本身
 ## 8. 阶段边界
 
 E1 监控器永远不会生成或提交 E2。只有全部 E1 campaign 单元完成后，由用户明确要求 Agent 开始独立的 E2 流程。
+
+## 9. 进度记录
+
+每次检查（监控器 `--once`、`sacct`/日志排查或手动核验）完成后，必须更新 `completion_status/progress.md` 的进度表格：
+
+- 更新顶部“最后更新”时间与 campaign 信息。
+- 更新“汇总”表（已完成 / 运行或排队 / 失败 / 总计）。
+- 更新“区域进度”网格，按 `region × (scenario × tech)` 用图例标记：`✅ 已完成（非空输出）`、`⏳ 运行/排队`、`❌ 失败`、`— 未提交/未生成`。
+- 在“异常明细”记录 FAILED / INCOMPLETE_OUTPUT / OOM 的单元及原因。
+
+`progress.md` 是 Agent 手动维护的人类可读进度概览，纳入 Git 跟踪；自动明细仍以 `completion_<server>_<campaign>.csv`、`latest_snapshot_<server>_<campaign>.json` 和 `usage_<server>_<campaign>.csv` 为准。
