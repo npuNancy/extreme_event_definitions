@@ -217,7 +217,10 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 cd {shlex.quote(str(project_dir))}
+# conda 环境的 activate.d 脚本（如 magics）可能引用未绑定变量，与 set -u 冲突；source 期间临时关闭 -u
+set +u
 source {shlex.quote(str(activate_path))} {shlex.quote(environment_name)}
+set -u
 {shlex.join(list(command))}
 """
 
