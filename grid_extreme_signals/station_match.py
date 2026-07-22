@@ -263,6 +263,18 @@ def filter_stations_for_country(stations_df: pd.DataFrame, country_geom,
     if df_typed.empty:
         return df_typed.assign(activation_year=pd.Series(dtype="int64"))
 
+    # 先用国家外接矩形做向量化粗筛，再对少量候选点执行精确 contains。
+    # SSP 场站表可达数十万行；直接为每个国家/技术构造全部 Point 会让作业生成器
+    # 和每个 E2 单元在登录节点/计算节点上重复消耗大量时间。
+    min_lon, min_lat, max_lon, max_lat = country_geom.bounds
+    in_bounds = (
+        df_typed["lon"].between(min_lon, max_lon)
+        & df_typed["lat"].between(min_lat, max_lat)
+    )
+    df_typed = df_typed[in_bounds].copy()
+    if df_typed.empty:
+        return df_typed.assign(activation_year=pd.Series(dtype="int64"))
+
     prepared = prep(country_geom)
     keep = np.fromiter(
         (prepared.contains(Point(float(row.lon), float(row.lat)))
