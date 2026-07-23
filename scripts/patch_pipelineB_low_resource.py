@@ -128,8 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _decode_attr(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8")
-    if isinstance(value, np.ndarray) and value.shape == ():
-        return _decode_attr(value.item())
+    if isinstance(value, np.ndarray):
+        # netCDF4 常把标量属性存为 1 维单元素数组（如 array(['México'])、array([4])）；提取标量
+        if value.size == 1:
+            return _decode_attr(value.ravel()[0])
+        return str(value)
     return str(value)
 
 
