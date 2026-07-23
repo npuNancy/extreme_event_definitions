@@ -47,6 +47,86 @@ from grid_extreme_signals.unit_conversion import (
 logger = logging.getLogger(__name__)
 
 
+def _matching_coord_indices(
+    reference: np.ndarray,
+    other: np.ndarray,
+    coord_name: str,
+    *,
+    atol: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """返回两个一维坐标轴中相同坐标点的索引。"""
+    reference = np.asarray(reference)
+    other = np.asarray(other)
+    if reference.ndim != 1 or other.ndim != 1:
+        raise ValueError(f"hurs 特判仅支持一维 {coord_name} 坐标")
+
+    close = np.isclose(
+        reference[:, np.newaxis],
+        other[np.newaxis, :],
+        rtol=0.0,
+        atol=atol,
+        equal_nan=False,
+    )
+    ref_indices, other_indices = np.nonzero(close)
+    if ref_indices.size == 0:
+        raise ValueError(f"hurs: {coord_name} 与参考网格没有交集")
+    if (
+        np.unique(ref_indices).size != ref_indices.size
+        or np.unique(other_indices).size != other_indices.size
+    ):
+        raise ValueError(f"hurs: {coord_name} 坐标存在重复或模糊匹配")
+    return ref_indices, other_indices
+
+
+def _align_hurs_to_spatial_intersection(
+    reference: xr.DataArray,
+    hurs: xr.DataArray,
+    lat_name: str,
+    lon_name: str,
+) -> tuple[dict[str, np.ndarray] | None, xr.DataArray]:
+    """网格不一致时，将参考网格与 hurs 裁到共同坐标点。"""
+    ref_lat = reference[lat_name].values
+    ref_lon = reference[lon_name].values
+    hurs_lat = hurs[lat_name].values
+    hurs_lon = hurs[lon_name].values
+    if (
+        ref_lat.shape == hurs_lat.shape
+        and ref_lon.shape == hurs_lon.shape
+        and np.allclose(ref_lat, hurs_lat, rtol=0.0, atol=1e-6, equal_nan=True)
+        and np.allclose(ref_lon, hurs_lon, rtol=0.0, atol=1e-6, equal_nan=True)
+    ):
+        return None, hurs
+
+    ref_lat_idx, hurs_lat_idx = _matching_coord_indices(
+        ref_lat, hurs_lat, lat_name
+    )
+    ref_lon_idx, hurs_lon_idx = _matching_coord_indices(
+        ref_lon, hurs_lon, lon_name
+    )
+    reference_indexers = {
+        lat_name: ref_lat_idx,
+        lon_name: ref_lon_idx,
+    }
+    hurs = hurs.isel({
+        lat_name: hurs_lat_idx,
+        lon_name: hurs_lon_idx,
+    }).assign_coords({
+        lat_name: reference[lat_name].isel({lat_name: ref_lat_idx}),
+        lon_name: reference[lon_name].isel({lon_name: ref_lon_idx}),
+    })
+    logger.warning(
+        "hurs 网格 %d×%d 与参考网格 %d×%d 不一致；"
+        "后续计算统一裁剪到空间交集 %d×%d",
+        hurs_lat.size,
+        hurs_lon.size,
+        ref_lat.size,
+        ref_lon.size,
+        ref_lat_idx.size,
+        ref_lon_idx.size,
+    )
+    return reference_indexers, hurs
+
+
 def _regional_bcsd_pr_units(units: str | None) -> str | None:
     """返回 regional BCSD 输出的降水单位。
 
@@ -221,14 +301,21 @@ class RegionalBcsdAdapter(WeatherAdapter):
         spatial_inputs = {"vas": vas_da.to_dataset(name="vas")}
         if tas_da is not None:
             spatial_inputs["tas"] = tas_da.to_dataset(name="tas")
-        if hurs_da is not None:
-            spatial_inputs["hurs"] = hurs_da.to_dataset(name="hurs")
         validate_same_spatial_grid(
             uas_da.to_dataset(name="uas"),
             spatial_inputs,
             lat_name,
             lon_name,
         )
+        if hurs_da is not None:
+            reference_indexers, hurs_da = _align_hurs_to_spatial_intersection(
+                uas_da, hurs_da, lat_name, lon_name
+            )
+            if reference_indexers is not None:
+                uas_da = uas_da.isel(reference_indexers)
+                vas_da = vas_da.isel(reference_indexers)
+                if tas_da is not None:
+                    tas_da = tas_da.isel(reference_indexers)
 
         interp_desc = []
 
@@ -383,13 +470,22 @@ class RegionalBcsdAdapter(WeatherAdapter):
         }
         if pr_da is not None:
             spatial_inputs["pr"] = pr_da.to_dataset(name="pr")
-        if hurs_da is not None:
-            spatial_inputs["hurs"] = hurs_da.to_dataset(name="hurs")
         validate_same_spatial_grid(
             rsds_da.to_dataset(name="rsds"),
             spatial_inputs,
             lat_name, lon_name,
         )
+        if hurs_da is not None:
+            reference_indexers, hurs_da = _align_hurs_to_spatial_intersection(
+                rsds_da, hurs_da, lat_name, lon_name
+            )
+            if reference_indexers is not None:
+                rsds_da = rsds_da.isel(reference_indexers)
+                tas_da = tas_da.isel(reference_indexers)
+                uas_da = uas_da.isel(reference_indexers)
+                vas_da = vas_da.isel(reference_indexers)
+                if pr_da is not None:
+                    pr_da = pr_da.isel(reference_indexers)
 
         # 将瞬时变量插值到 rsds 时间轴（方案 4）
         tas_time = tas_da[time_name].values

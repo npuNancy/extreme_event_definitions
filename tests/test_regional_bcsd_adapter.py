@@ -1,13 +1,24 @@
 """Tests for regional_bcsd adapter."""
 from __future__ import annotations
 
+from argparse import Namespace
+
 import numpy as np
 import pytest
-from argparse import Namespace
+import xarray as xr
 
 import registry
 from grid_extreme_signals.adapters.regional_bcsd import RegionalBcsdAdapter
 from tests.conftest import make_bcsd_dataset
+
+
+def _crop_hurs_grid(path) -> None:
+    """模拟 hurs 使用新 BBOX、其他变量仍使用旧 BBOX。"""
+    with xr.open_dataset(path) as source:
+        hurs = source.load()
+    hurs = hurs.isel(lat=slice(1, None), lon=slice(1, -1))
+    hurs.to_netcdf(path, mode="w")
+    hurs.close()
 
 
 class TestIterTasks:
@@ -89,6 +100,27 @@ class TestLoadWindWeather:
         assert "rh_pct" not in bundle.dataset
         assert bundle.skipped_inputs["rh_pct"] == "未找到 hurs 文件"
 
+    def test_hurs_grid_mismatch_uses_spatial_intersection(self, tmp_path):
+        hurs_path = None
+        for var in ("tas", "uas", "vas", "rsds", "pr", "hurs"):
+            path = make_bcsd_dataset(tmp_path, var=var)
+            if var == "hurs":
+                hurs_path = path
+        _crop_hurs_grid(hurs_path)
+
+        args = Namespace(
+            data_dir=str(tmp_path / "bcsd_outputs"),
+            model="TEST-MODEL", region="TestRegion", scenario="ssp126",
+            years="2015", output_root=str(tmp_path / "out"),
+            allow_unit_inference=False, allow_missing_optional=False,
+        )
+        adapter = RegionalBcsdAdapter(args)
+        bundle = adapter.load_wind_weather(adapter.iter_tasks(args)[0])
+
+        assert bundle.dataset.sizes["lat"] == 3
+        assert bundle.dataset.sizes["lon"] == 4
+        assert bundle.dataset["rh_pct"].shape == bundle.dataset["wind_ms"].shape
+
 
 class TestLoadSolarWeather:
     def test_structure(self, tmp_path):
@@ -141,8 +173,6 @@ class TestLoadSolarWeather:
         assert float(bundle.dataset["rh_pct"].max()) <= 100.0
 
     def test_hurs_is_interpolated_to_rsds_time_axis(self, tmp_path):
-        import xarray as xr
-
         hurs_path = None
         for var in ("tas", "uas", "vas", "rsds", "pr", "hurs"):
             path = make_bcsd_dataset(tmp_path, var=var)
@@ -164,6 +194,28 @@ class TestLoadSolarWeather:
         bundle = adapter.load_solar_weather(adapter.iter_tasks(args)[0])
         assert bundle.dataset["rh_pct"].shape == bundle.dataset["rsds"].shape
         assert "hurs→rsds" in bundle.target_time_axis
+
+    def test_hurs_grid_mismatch_uses_spatial_intersection(self, tmp_path):
+        hurs_path = None
+        for var in ("tas", "uas", "vas", "rsds", "pr", "hurs"):
+            path = make_bcsd_dataset(tmp_path, var=var)
+            if var == "hurs":
+                hurs_path = path
+        _crop_hurs_grid(hurs_path)
+
+        args = Namespace(
+            data_dir=str(tmp_path / "bcsd_outputs"),
+            model="TEST-MODEL", region="TestRegion", scenario="ssp126",
+            years="2015", output_root=str(tmp_path / "out"),
+            allow_unit_inference=False, allow_missing_optional=False,
+        )
+        adapter = RegionalBcsdAdapter(args)
+        bundle = adapter.load_solar_weather(adapter.iter_tasks(args)[0])
+
+        assert bundle.dataset.sizes["lat"] == 3
+        assert bundle.dataset.sizes["lon"] == 4
+        assert bundle.dataset["rh_pct"].shape == bundle.dataset["rsds"].shape
+        assert bundle.dataset["precip_mmh"].shape == bundle.dataset["rsds"].shape
 
     def test_pr_optional(self, tmp_path):
         """When pr file is missing, precip_mmh should be skipped."""
