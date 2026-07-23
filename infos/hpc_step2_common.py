@@ -153,7 +153,13 @@ def job_name(
     tech: str,
     years: str,
 ) -> str:
-    stage_token = "s2e1" if stage == "E1" else "s2e2"
+    stage_token = {
+        "E1": "s2e1",
+        "E2": "s2e2",
+        "E2ID": "s2e2id",
+    }.get(stage)
+    if stage_token is None:
+        raise ValueError(f"不支持的 step2 作业阶段：{stage}")
     parts = (
         stage_token,
         campaign,

@@ -93,8 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--baseline-years", default="2015-2024")
     parser.add_argument("--output-root", default=None)
-    parser.add_argument("--job-root", default="~/extreme_event_jobs/step2_E2")
-    parser.add_argument("--log-root", default="~/extreme_event_logs/step2_E2")
+    parser.add_argument("--job-root", default=None)
+    parser.add_argument("--log-root", default=None)
     parser.add_argument("--partition", default="wzhctest")
     parser.add_argument("--e2-cpus", type=int, default=6)
     parser.add_argument(
@@ -102,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="/work/home/acbpgywfpz/miniconda3/bin/activate",
     )
     parser.add_argument("--environment-name", default="climate")
+    parser.add_argument(
+        "--station-id-only",
+        action="store_true",
+        help="生成只校验或补齐 station_id 的元数据迁移 campaign。",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--force", action="store_true", help="覆盖同名作业脚本和清单。")
     parser.add_argument("--dry-run", action="store_true", help="只打印计划，不写文件。")
@@ -113,7 +118,9 @@ def run(args: argparse.Namespace) -> Path:
     scenarios = validate_scenarios(args.scenarios)
     techs = validate_techs(args.techs)
     parse_years(args.years)
-    if args.baseline_years != "2015-2024":
+    if args.station_id_only and args.overwrite:
+        raise ValueError("--station-id-only 不接受 --overwrite；错误 ID 必须失败")
+    if not args.station_id_only and args.baseline_years != "2015-2024":
         raise ValueError("低资源阈值基准期固定为 2015-2024")
     if args.e2_cpus < 1:
         raise ValueError("--e2-cpus 必须为正整数")
@@ -130,15 +137,21 @@ def run(args: argparse.Namespace) -> Path:
         if args.output_root
         else project_dir / "outputs/station_signals"
     )
-    job_root = expand_path(args.job_root)
-    log_root = expand_path(args.log_root)
+    default_stage_dir = "step2_E2_station_id" if args.station_id_only else "step2_E2"
+    job_root = expand_path(
+        args.job_root or f"~/extreme_event_jobs/{default_stage_dir}"
+    )
+    log_root = expand_path(
+        args.log_root or f"~/extreme_event_logs/{default_stage_dir}"
+    )
     activate_path = expand_path(args.activate_path)
     validate_sbatch_path(log_root, label="--log-root")
     require_dir(project_dir, label="--project-dir")
     require_dir(data_dir, label="--data-dir")
-    require_dir(cf_root, label="--cf-root")
     require_dir(stations_dir, label="--stations-dir")
-    require_dir(threshold_dir, label="--threshold-dir")
+    if not args.station_id_only:
+        require_dir(cf_root, label="--cf-root")
+        require_dir(threshold_dir, label="--threshold-dir")
     require_file(project_dir / "step2_split_E2_low_resource.py", label="E2 入口")
     require_file(activate_path, label="--activate-path")
     require_file(shp, label="--shp")
@@ -149,16 +162,17 @@ def run(args: argparse.Namespace) -> Path:
             stations_dir / SCENARIO_STATIONS[scenario],
             label=f"{scenario} 场站 CSV",
         )
-    for scenario in scenarios:
-        for tech in techs:
-            require_file(
-                threshold_dir
-                / (
-                    f"low_resource_threshold_sparse_{scenario}_{tech}_"
-                    "ERA5Land_2015-2024.nc"
-                ),
-                label=f"{scenario}/{tech} 阈值",
-            )
+    if not args.station_id_only:
+        for scenario in scenarios:
+            for tech in techs:
+                require_file(
+                    threshold_dir
+                    / (
+                        f"low_resource_threshold_sparse_{scenario}_{tech}_"
+                        "ERA5Land_2015-2024.nc"
+                    ),
+                    label=f"{scenario}/{tech} 阈值",
+                )
     regions_by_model = resolve_regions(data_dir, models, args.regions)
     station_inventory = _build_station_inventory(
         stations_dir, shp, scenarios, regions_by_model, techs
@@ -171,13 +185,16 @@ def run(args: argparse.Namespace) -> Path:
         "techs": techs,
         "years": args.years,
         "output_root": str(output_root),
-        "threshold_dir": str(threshold_dir),
         "stations_dir": str(stations_dir),
         "shp": str(shp),
-        "baseline_years": args.baseline_years,
     }
-    campaign = campaign_id("E2", selection)
-    prefix = f"s2e2_{campaign}_"
+    if args.station_id_only:
+        selection["mode"] = "station_id_only"
+    else:
+        selection["threshold_dir"] = str(threshold_dir)
+        selection["baseline_years"] = args.baseline_years
+    campaign = campaign_id("E2_STATION_ID" if args.station_id_only else "E2", selection)
+    prefix = f"{'s2e2id' if args.station_id_only else 's2e2'}_{campaign}_"
     units: list[dict[str, object]] = []
     planned_paths: set[Path] = set()
     scripts_to_write: list[tuple[Path, str, list[str]]] = []
@@ -189,7 +206,13 @@ def run(args: argparse.Namespace) -> Path:
                     station_csv = stations_dir / SCENARIO_STATIONS[scenario]
                     station_count = station_inventory[(region, scenario, tech)]
                     name = job_name(
-                        "E2", campaign, model, region, scenario, tech, args.years
+                        "E2ID" if args.station_id_only else "E2",
+                        campaign,
+                        model,
+                        region,
+                        scenario,
+                        tech,
+                        args.years,
                     )
                     script_path = job_root / f"job_{name}.sh"
                     if script_path in planned_paths:
@@ -203,10 +226,6 @@ def run(args: argparse.Namespace) -> Path:
                         "step2_split_E2_low_resource.py",
                         "--output_root",
                         str(output_root / "regional_bcsd" / model),
-                        "--cf_root",
-                        str(cf_root),
-                        "--threshold_dir",
-                        str(threshold_dir),
                         "--stations_csv",
                         str(station_csv),
                         "--shp",
@@ -223,9 +242,20 @@ def run(args: argparse.Namespace) -> Path:
                         tech,
                         "--years",
                         args.years,
-                        "--baseline_years",
-                        args.baseline_years,
                     ]
+                    if args.station_id_only:
+                        command.append("--station-id-only")
+                    else:
+                        command.extend(
+                            [
+                                "--cf_root",
+                                str(cf_root),
+                                "--threshold_dir",
+                                str(threshold_dir),
+                                "--baseline_years",
+                                args.baseline_years,
+                            ]
+                        )
                     if args.overwrite:
                         command.append("--overwrite")
                     script = render_script(
@@ -269,6 +299,7 @@ def run(args: argparse.Namespace) -> Path:
         "partition": args.partition,
         "cpus": args.e2_cpus,
         "overwrite": bool(args.overwrite),
+        "station_id_only": bool(args.station_id_only),
         "selection": selection,
         "units": units,
     }
@@ -290,7 +321,7 @@ def run(args: argparse.Namespace) -> Path:
             write_text(script_path, script, force=args.force)
             script_path.chmod(0o750)
         write_manifest(manifest_path, manifest, force=args.force)
-    if args.overwrite:
+    if args.overwrite and not args.station_id_only:
         print("警告：生成的 E2 作业将覆盖所选 signal_low_resource。")
     print(f"E2 计划作业数：{len(units)}")
     print(f"E2 清单：{manifest_path}")

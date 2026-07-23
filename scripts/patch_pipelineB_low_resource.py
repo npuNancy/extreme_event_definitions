@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import warnings
@@ -112,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max_dist", type=float, default=sm.MAX_DIST_DEG)
     p.add_argument("--overwrite", action="store_true",
                    help="若 signal_low_resource 已存在则覆盖。")
+    p.add_argument(
+        "--station-id-only",
+        action="store_true",
+        help="只原子校验或补齐 station_id；不访问 CF、阈值或任何信号值。",
+    )
     p.add_argument("--dry_run", action="store_true",
                    help="只列出将处理的文件。")
     p.add_argument("--max_files", type=int, default=0,
@@ -239,6 +245,12 @@ def _load_unit_stations(args, region: str, tech: str) -> pd.DataFrame:
             "逐单元 E2 运行需要同时提供 --stations_csv 和 --shp"
         )
     countries = sm.load_country_shapes(args.shp)
+    inferred_scenario = sm.infer_scenario_from_csv(args.stations_csv)
+    if args.scenario != "all" and inferred_scenario != args.scenario:
+        raise ValueError(
+            f"场站 CSV 情景与作业不一致：CSV={inferred_scenario}, "
+            f"作业={args.scenario}"
+        )
     country_name = sm.bcsd_region_to_ne_name(region)
     if country_name not in countries:
         raise KeyError(
@@ -414,8 +426,279 @@ def _update_attrs(f: h5py.File, attrs: dict[str, str]) -> None:
         _set_str_attr(f, key, str(value))
 
 
-def _process_file(path: Path, args) -> bool:
+def _validate_output_identity(
+    out: h5py.File,
+    path: Path,
+    args,
+    *,
+    region: str,
+    scenario: str,
+    tech: str,
+    expected_stations: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """交叉校验作业单元、文件属性和预期 SSP 场站清单。"""
+    expected_attrs = {
+        "model": args.model,
+        "region": region,
+        "scenario": scenario,
+    }
+    for key, expected in expected_attrs.items():
+        if key not in out.attrs:
+            raise ValueError(f"{path}: 缺少全局属性 {key}")
+        actual = _decode_attr(out.attrs[key])
+        if actual != expected:
+            raise ValueError(
+                f"{path}: 属性 {key}={actual!r} 与作业单元 {expected!r} 不一致"
+            )
+    if "tech" in out.attrs and _decode_attr(out.attrs["tech"]) != tech:
+        raise ValueError(
+            f"{path}: 属性 tech={_decode_attr(out.attrs['tech'])!r} 与 {tech!r} 不一致"
+        )
+    if "station_lon" not in out or "station_lat" not in out or "station" not in out:
+        raise ValueError(f"{path}: 缺少 station/station_lon/station_lat")
+
+    station_lons = out["station_lon"][:].astype(np.float64)
+    station_lats = out["station_lat"][:].astype(np.float64)
+    n_station = int(out["station"].shape[0])
+    if station_lons.shape != (n_station,) or station_lats.shape != (n_station,):
+        raise ValueError(f"{path}: 场站坐标维度与 station 不一致")
+    if len(expected_stations) != n_station:
+        raise ValueError(
+            f"{path}: 文件场站数 {n_station} 与 SSP 场站清单 "
+            f"{len(expected_stations)} 不一致"
+        )
+
+    expected_ids = sm.station_ids(
+        scenario,
+        tech,
+        expected_stations["lon"].to_numpy(np.float64),
+        expected_stations["lat"].to_numpy(np.float64),
+    )
+    coordinate_ids = sm.station_ids(
+        scenario,
+        tech,
+        station_lons,
+        station_lats,
+    )
+    mismatch = np.flatnonzero(coordinate_ids != expected_ids)
+    if mismatch.size:
+        index = int(mismatch[0])
+        raise ValueError(
+            f"{path}: station={index} 的四位量化坐标或顺序与 SSP 场站清单不一致"
+        )
+
+    if "station_type" in out:
+        expected_type = 1 if tech == "wind" else 0
+        station_types = out["station_type"][:]
+        if np.any(station_types != expected_type):
+            raise ValueError(f"{path}: station_type 与技术类型 {tech} 不一致")
+    return station_lons, station_lats
+
+
+def _dataset_uses_station_dimension(dataset: h5py.Dataset) -> bool:
+    for dimension in dataset.dims:
+        if any(scale.name == "/station" for scale in dimension.values()):
+            return True
+    return False
+
+
+def _append_station_id_coordinate_attr(out: h5py.File) -> None:
+    """让 xarray 将新 HDF5 变量识别为辅助坐标。"""
+    for name, dataset in out.items():
+        if not isinstance(dataset, h5py.Dataset):
+            continue
+        if name in {"time", "station", "station_id"}:
+            continue
+        if not _dataset_uses_station_dimension(dataset):
+            continue
+        existing = _decode_attr(dataset.attrs.get("coordinates", "")).split()
+        if "station_id" not in existing:
+            existing.append("station_id")
+        dataset.attrs["coordinates"] = np.bytes_(" ".join(existing))
+
+
+def _write_station_id_h5(
+    out: h5py.File,
+    ids: np.ndarray,
+) -> None:
+    if "station_id" in out:
+        raise ValueError("station_id 已存在，禁止静默覆盖")
+    dim_id = int(out["station"].attrs.get("_Netcdf4Dimid", 1))
+    dataset = out.create_dataset(
+        "station_id",
+        shape=(ids.size,),
+        dtype=h5py.string_dtype(encoding="utf-8"),
+    )
+    dataset[:] = ids.astype(object)
+    dataset.dims[0].attach_scale(out["station"])
+    dataset.attrs["_Netcdf4Coordinates"] = np.array([dim_id], dtype=np.int32)
+    _append_station_id_coordinate_attr(out)
+    _set_str_attr(out, "station_id_scheme", sm.STATION_ID_SCHEME)
+    out.attrs["station_id_coordinate_decimals"] = np.int32(
+        sm.STATION_ID_COORDINATE_DECIMALS
+    )
+
+
+def _validate_station_id_file(
+    path: Path,
+    *,
+    scenario: str,
+    tech: str,
+    expected_stations: pd.DataFrame,
+) -> None:
+    import xarray as xr
+
+    with xr.open_dataset(path, decode_times=False) as ds:
+        if "station_id" not in ds.coords:
+            raise ValueError(f"{path}: station_id 未被 xarray 识别为坐标")
+        ids = ds["station_id"].values
+        lons = ds["station_lon"].values
+        lats = ds["station_lat"].values
+        sm.validate_station_ids(ids, scenario, tech, lons, lats)
+        expected_ids = sm.station_ids(
+            scenario,
+            tech,
+            expected_stations["lon"].to_numpy(np.float64),
+            expected_stations["lat"].to_numpy(np.float64),
+        )
+        decoded = np.asarray(ids).astype(str)
+        if not np.array_equal(decoded, expected_ids):
+            raise ValueError(f"{path}: station_id 顺序与 SSP 场站清单不一致")
+        if ds.attrs.get("station_id_scheme") != sm.STATION_ID_SCHEME:
+            raise ValueError(f"{path}: station_id_scheme 不正确")
+        decimals = int(ds.attrs.get("station_id_coordinate_decimals", -1))
+        if decimals != sm.STATION_ID_COORDINATE_DECIMALS:
+            raise ValueError(f"{path}: station_id_coordinate_decimals 不正确")
+
+
+def _station_id_is_xarray_coordinate(path: Path) -> bool:
+    import xarray as xr
+
+    with xr.open_dataset(path, decode_times=False) as ds:
+        return "station_id" in ds.coords
+
+
+def _repair_station_id_metadata_h5(out: h5py.File) -> None:
+    dataset = out["station_id"]
+    if not _dataset_uses_station_dimension(dataset):
+        dataset.dims[0].attach_scale(out["station"])
+        dim_id = int(out["station"].attrs.get("_Netcdf4Dimid", 1))
+        dataset.attrs["_Netcdf4Coordinates"] = np.array([dim_id], dtype=np.int32)
+    _append_station_id_coordinate_attr(out)
+    _set_str_attr(out, "station_id_scheme", sm.STATION_ID_SCHEME)
+    out.attrs["station_id_coordinate_decimals"] = np.int32(
+        sm.STATION_ID_COORDINATE_DECIMALS
+    )
+
+
+def _ensure_station_id_atomic(
+    path: Path,
+    args,
+    *,
+    region: str,
+    scenario: str,
+    tech: str,
+    expected_stations: pd.DataFrame,
+) -> bool:
+    """严格校验已有 ID，或通过同目录临时副本原子补齐旧文件。"""
+    with _open_h5(path, "r") as out:
+        station_lons, station_lats = _validate_output_identity(
+            out,
+            path,
+            args,
+            region=region,
+            scenario=scenario,
+            tech=tech,
+            expected_stations=expected_stations,
+        )
+        has_station_id = "station_id" in out
+        if has_station_id:
+            sm.validate_station_ids(
+                out["station_id"][:],
+                scenario,
+                tech,
+                station_lons,
+                station_lats,
+            )
+            raw_scheme = out.attrs.get("station_id_scheme")
+            if raw_scheme is not None and _decode_attr(raw_scheme) != sm.STATION_ID_SCHEME:
+                raise ValueError(f"{path}: station_id_scheme 与当前契约不一致")
+            raw_decimals = out.attrs.get("station_id_coordinate_decimals")
+            if (
+                raw_decimals is not None
+                and int(raw_decimals) != sm.STATION_ID_COORDINATE_DECIMALS
+            ):
+                raise ValueError(
+                    f"{path}: station_id_coordinate_decimals 与当前契约不一致"
+                )
+            missing_id_attrs = raw_scheme is None or raw_decimals is None
+    if has_station_id:
+        needs_metadata_repair = (
+            missing_id_attrs or not _station_id_is_xarray_coordinate(path)
+        )
+        if not needs_metadata_repair:
+            _validate_station_id_file(
+                path,
+                scenario=scenario,
+                tech=tech,
+                expected_stations=expected_stations,
+            )
+            return False
+
+    ids = (
+        None
+        if has_station_id
+        else sm.station_ids(scenario, tech, station_lons, station_lats)
+    )
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix=path.name + ".station-id.",
+        suffix=".nc",
+        dir=path.parent,
+        delete=False,
+    )
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    try:
+        shutil.copy2(path, temp_path)
+        with _open_h5(temp_path, "r+") as out:
+            if has_station_id:
+                _repair_station_id_metadata_h5(out)
+            else:
+                _write_station_id_h5(out, ids)
+        _validate_station_id_file(
+            temp_path,
+            scenario=scenario,
+            tech=tech,
+            expected_stations=expected_stations,
+        )
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    logger.info("[%s/%s/%s] 已原子补齐 station_id 契约", region, scenario, tech)
+    return True
+
+
+def _process_file(
+    path: Path,
+    args,
+    expected_stations: pd.DataFrame | None = None,
+) -> bool:
     region, scenario, tech = _parse_station_path(path)
+    if expected_stations is None:
+        expected_stations = _load_unit_stations(args, region, tech)
+    station_id_changed = _ensure_station_id_atomic(
+        path,
+        args,
+        region=region,
+        scenario=scenario,
+        tech=tech,
+        expected_stations=expected_stations,
+    )
+    if args.station_id_only:
+        logger.info("[%s/%s/%s] station_id 校验完成", region, scenario, tech)
+        return station_id_changed
+
     cf_file = _find_cf_file(Path(args.cf_root), args.model, region, scenario, tech)
     if cf_file is None:
         raise FileNotFoundError(
@@ -442,7 +725,7 @@ def _process_file(path: Path, args) -> bool:
     with _open_h5(path, "r+") as out:
         if "signal_low_resource" in out and not args.overwrite:
             logger.info("[%s/%s/%s] 已存在 signal_low_resource，跳过", region, scenario, tech)
-            return False
+            return station_id_changed
 
         out_times = _read_time(out)
         station_lats = out["station_lat"][:].astype(np.float64)
@@ -639,7 +922,11 @@ def _process_unit(args) -> bool:
         return False
     path = _target_path(args, region, scenario, tech)
     if path.exists():
-        return _process_file(path, args)
+        return _process_file(path, args, expected_stations=stations)
+    if args.station_id_only:
+        raise FileNotFoundError(
+            f"[{region}/{scenario}/{tech}] station-id-only 目标文件不存在：{path}"
+        )
     return _create_low_resource_file(
         path,
         args,
@@ -653,6 +940,8 @@ def _process_unit(args) -> bool:
 def main() -> None:
     args = build_parser().parse_args()
     setup_logging("patch_pipelineB_low_resource")
+    if args.station_id_only and args.overwrite:
+        raise ValueError("--station-id-only 不接受 --overwrite；错误 ID 必须失败")
     explicit_unit = (
         args.region != "all"
         and args.scenario != "all"

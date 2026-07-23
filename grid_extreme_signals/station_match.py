@@ -20,7 +20,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +69,13 @@ BCSD_REGION_TO_NAME = {
     "México": "Mexico",
 }
 
+#: 场站稳定 ID 的跨项目接口契约。
+STATION_ID_SCHEME = "sha1-20:scenario|tech|lon4|lat4"
+STATION_ID_COORDINATE_DECIMALS = 4
+STATION_ID_PATTERN = re.compile(r"^[0-9a-f]{20}$")
+VALID_SCENARIOS = frozenset({"ssp126", "ssp245", "ssp585"})
+VALID_TECHS = frozenset({"wind", "solar"})
+
 
 # ---------------------------------------------------------------------------
 # 经度归一化
@@ -101,6 +110,129 @@ def normalize_grid_lon(grid_lon) -> np.ndarray:
     """
     arr = np.asarray(grid_lon, dtype=np.float64)
     return lon_to_180(arr) if is_lon_360(arr) else arr
+
+
+# ---------------------------------------------------------------------------
+# 稳定场站 ID
+# ---------------------------------------------------------------------------
+
+def _validate_station_id_context(scenario: str, tech: str) -> None:
+    if scenario not in VALID_SCENARIOS:
+        raise ValueError(
+            f"不支持的情景 {scenario!r}；可选值为 {sorted(VALID_SCENARIOS)}"
+        )
+    if tech not in VALID_TECHS:
+        raise ValueError(
+            f"不支持的技术类型 {tech!r}；可选值为 {sorted(VALID_TECHS)}"
+        )
+
+
+def station_id(scenario: str, tech: str, lon: float, lat: float) -> str:
+    """根据情景、技术类型和四位小数坐标生成稳定场站 ID。"""
+    _validate_station_id_context(scenario, tech)
+    lon_value = float(lon_to_180(float(lon)))
+    lat_value = float(lat)
+    if not np.isfinite(lon_value) or not np.isfinite(lat_value):
+        raise ValueError("场站经纬度必须为有限值")
+    if not -90.0 <= lat_value <= 90.0:
+        raise ValueError(f"场站纬度超出 [-90, 90]：{lat_value}")
+    key = f"{scenario}|{tech}|{lon_value:.4f}|{lat_value:.4f}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
+
+
+def station_ids(
+    scenario: str,
+    tech: str,
+    lons,
+    lats,
+) -> np.ndarray:
+    """向量化生成一组稳定场站 ID，并执行数量和唯一性校验。"""
+    _validate_station_id_context(scenario, tech)
+    lon_values = np.asarray(lons, dtype=np.float64)
+    lat_values = np.asarray(lats, dtype=np.float64)
+    if lon_values.ndim != 1 or lat_values.ndim != 1:
+        raise ValueError("场站经纬度必须是一维数组")
+    if lon_values.shape != lat_values.shape:
+        raise ValueError(
+            f"场站经纬度数量不一致：lon={lon_values.size}, lat={lat_values.size}"
+        )
+    ids = np.asarray(
+        [
+            station_id(scenario, tech, lon, lat)
+            for lon, lat in zip(lon_values, lat_values)
+        ],
+        dtype=str,
+    )
+    _validate_station_id_uniqueness(ids, lon_values, lat_values)
+    return ids
+
+
+def _quantized_station_coordinates(lons, lats) -> list[tuple[str, str]]:
+    lon_values = lon_to_180(np.asarray(lons, dtype=np.float64))
+    lat_values = np.asarray(lats, dtype=np.float64)
+    return [
+        (
+            f"{float(lon):.{STATION_ID_COORDINATE_DECIMALS}f}",
+            f"{float(lat):.{STATION_ID_COORDINATE_DECIMALS}f}",
+        )
+        for lon, lat in zip(lon_values, lat_values)
+    ]
+
+
+def _validate_station_id_uniqueness(ids, lons, lats) -> None:
+    id_values = np.asarray(ids).astype(str)
+    coordinates = _quantized_station_coordinates(lons, lats)
+    seen: dict[str, tuple[str, str]] = {}
+    for value, coordinate in zip(id_values, coordinates):
+        previous = seen.get(value)
+        if previous is not None:
+            if previous != coordinate:
+                raise ValueError(
+                    f"station_id 哈希碰撞：{value} 对应 {previous} 和 {coordinate}"
+                )
+            raise ValueError(
+                f"文件内 station_id 重复：{value}，量化坐标={coordinate}"
+            )
+        seen[value] = coordinate
+
+
+def validate_station_ids(
+    ids,
+    scenario: str,
+    tech: str,
+    lons,
+    lats,
+) -> np.ndarray:
+    """严格校验已有 ID 的格式、数量、唯一性及逐项重算结果。"""
+    id_values = np.asarray(ids)
+    if id_values.ndim != 1:
+        raise ValueError("station_id 必须是一维数组")
+    decoded = np.asarray(
+        [
+            value.decode("utf-8") if isinstance(value, (bytes, np.bytes_)) else str(value)
+            for value in id_values
+        ],
+        dtype=str,
+    )
+    if any(not value for value in decoded):
+        raise ValueError("station_id 不能包含空值")
+    invalid = [value for value in decoded if STATION_ID_PATTERN.fullmatch(value) is None]
+    if invalid:
+        raise ValueError(f"station_id 格式错误：{invalid[0]!r}")
+    expected = station_ids(scenario, tech, lons, lats)
+    if decoded.shape != expected.shape:
+        raise ValueError(
+            f"station_id 数量与场站数不一致：id={decoded.size}, station={expected.size}"
+        )
+    _validate_station_id_uniqueness(decoded, lons, lats)
+    mismatch = np.flatnonzero(decoded != expected)
+    if mismatch.size:
+        index = int(mismatch[0])
+        raise ValueError(
+            f"station_id 与重算结果不一致：station={index}, "
+            f"已有={decoded[index]}, 期望={expected[index]}"
+        )
+    return decoded
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +699,19 @@ def write_station_signals(
     p.parent.mkdir(parents=True, exist_ok=True)
     n_sta = len(match)
     sta = match.stations
+    ids = station_ids(
+        scenario,
+        tech,
+        sta["lon"].to_numpy(np.float64),
+        sta["lat"].to_numpy(np.float64),
+    )
+    validate_station_ids(
+        ids,
+        scenario,
+        tech,
+        sta["lon"].to_numpy(np.float64),
+        sta["lat"].to_numpy(np.float64),
+    )
 
     data_vars = {}
     for name, arr in masks.items():
@@ -594,11 +739,15 @@ def write_station_signals(
             match.weight.astype(np.float32), dims=("station", "point"))
 
     ds = xr.Dataset(data_vars, coords={
-        "time": times, "station": np.arange(n_sta, dtype=np.int32)})
+        "time": times,
+        "station": np.arange(n_sta, dtype=np.int32),
+        "station_id": ("station", ids),
+    })
     if isinstance(match, StationSpatialWeights) and match_method == "bilinear":
         ds = ds.assign_coords(point=np.arange(match_weight_points, dtype=np.int16))
     ds.attrs.update({
         "source": source, "model": model, "region": region, "scenario": scenario,
+        "tech": tech,
         "source_csv": source_csv, "pipeline": pipeline,
         "grid_resolution": "0.1deg", "match_method": match_method,
         "match_weight_points": str(match_weight_points),
@@ -608,6 +757,8 @@ def write_station_signals(
         "skipped_events": ",".join(skipped),
         "skipped_event_reasons": "; ".join(f"{k}: {v}" for k, v in skipped_reasons.items()),
         "n_stations": str(n_sta),
+        "station_id_scheme": STATION_ID_SCHEME,
+        "station_id_coordinate_decimals": STATION_ID_COORDINATE_DECIMALS,
         "threshold_source": "extreme_event_definitions/events",
     })
     if attrs_extra:

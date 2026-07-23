@@ -11,6 +11,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from infos.hpc_step2_E1 import create_step2_E1_jobs as e1_jobs
 from infos.hpc_step2_E2 import create_step2_E2_jobs as e2_jobs
@@ -147,6 +148,68 @@ def test_e2_generator_tiny_matrix_and_paths(
         assert unit["station_count"] == 2
         assert unit["has_stations"] is True
     subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
+
+
+def test_e2_station_id_only_generator_has_independent_dependencies_and_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _common_tree(tmp_path)
+    monkeypatch.setattr(
+        e2_jobs,
+        "_build_station_inventory",
+        lambda stations_dir, shp, scenarios, regions_by_model, techs: {
+            ("Germany", scenario, tech): 1
+            for scenario in scenarios
+            for tech in techs
+        },
+    )
+    common = [
+        "--models", "NESM3",
+        "--regions", "Germany",
+        "--scenarios", "ssp126",
+        "--techs", "wind",
+        "--years", "2015-2060",
+        "--project-dir", str(PROJECT_ROOT),
+        "--data-dir", str(tree["data_dir"]),
+        "--stations-dir", str(tree["stations_dir"]),
+        "--shp", str(tree["shp"]),
+        "--activate-path", str(tree["activate"]),
+    ]
+    normal_args = e2_jobs.build_parser().parse_args(
+        [
+            *common,
+            "--cf-root", str(tree["cf_root"]),
+            "--threshold-dir", str(tree["thresholds"]),
+            "--job-root", str(tmp_path / "jobs/normal"),
+            "--log-root", str(tmp_path / "logs/normal"),
+        ]
+    )
+    normal_manifest = json.loads(
+        e2_jobs.run(normal_args).read_text(encoding="utf-8")
+    )
+    metadata_args = e2_jobs.build_parser().parse_args(
+        [
+            *common,
+            "--station-id-only",
+            "--cf-root", str(tmp_path / "does-not-exist/cfs"),
+            "--threshold-dir", str(tmp_path / "does-not-exist/thresholds"),
+            "--job-root", str(tmp_path / "jobs/metadata"),
+            "--log-root", str(tmp_path / "logs/metadata"),
+        ]
+    )
+    metadata_path = e2_jobs.run(metadata_args)
+    metadata_manifest = json.loads(metadata_path.read_text(encoding="utf-8"))
+    command = metadata_manifest["units"][0]["command"]
+    assert metadata_manifest["campaign_id"] != normal_manifest["campaign_id"]
+    assert metadata_manifest["station_id_only"] is True
+    assert metadata_manifest["selection"]["mode"] == "station_id_only"
+    assert metadata_manifest["job_prefix"].startswith("s2e2id_")
+    assert "--station-id-only" in command
+    assert "--cf_root" not in command
+    assert "--threshold_dir" not in command
+    scripts = list((tmp_path / "jobs/metadata").glob("job_*.sh"))
+    assert len(scripts) == 1
+    subprocess.run(["bash", "-n", str(scripts[0])], check=True)
 
 
 def test_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -366,6 +429,155 @@ def test_e2_creates_low_resource_file_when_e1_output_is_missing(
     )
     assert captured["kwargs"]["supported"] == ["low_resource"]
     assert captured["kwargs"]["attrs_extra"]["e2_created_without_e1"] == "true"
+
+
+def _write_legacy_station_signal(
+    path: Path,
+    *,
+    station_id_values: list[str] | None = None,
+) -> pd.DataFrame:
+    stations = pd.DataFrame(
+        {
+            "lon": [10.0, 11.0],
+            "lat": [50.0, 51.0],
+            "type": ["wind", "wind"],
+            "activation_year": [2030, 2040],
+            "capacity_gw": [1.0, 2.0],
+        }
+    )
+    coords: dict[str, object] = {
+        "time": np.array(
+            [np.datetime64("2030-01-01"), np.datetime64("2030-01-01T03:00")]
+        ),
+        "station": np.arange(2, dtype=np.int32),
+    }
+    if station_id_values is not None:
+        coords["station_id"] = ("station", station_id_values)
+    ds = xr.Dataset(
+        {
+            "signal_high_wind": (
+                ("time", "station"),
+                np.array([[0, 1], [1, 0]], dtype=np.int8),
+            ),
+            "station_lon": ("station", stations["lon"].to_numpy(np.float32)),
+            "station_lat": ("station", stations["lat"].to_numpy(np.float32)),
+            "station_type": ("station", np.ones(2, dtype=np.int8)),
+            "activation_year": (
+                "station",
+                stations["activation_year"].to_numpy(np.int16),
+            ),
+            "capacity_gw": (
+                "station",
+                stations["capacity_gw"].to_numpy(np.float32),
+            ),
+            "match_dist_deg": ("station", np.zeros(2, dtype=np.float32)),
+        },
+        coords=coords,
+        attrs={
+            "source": "regional_bcsd",
+            "model": "NESM3",
+            "region": "Germany",
+            "scenario": "ssp126",
+            "supported_events": "high_wind",
+            "skipped_events": "",
+            "match_method": "nearest",
+            "max_match_dist_deg": "0.15",
+        },
+    )
+    ds.to_netcdf(path)
+    ds.close()
+    return stations
+
+
+def test_e2_station_id_only_atomically_migrates_without_changing_signals(
+    tmp_path: Path,
+) -> None:
+    path = (
+        tmp_path
+        / "Germany/ssp126/"
+        "station_signals_wind_NESM3_Germany_ssp126_2015-2060.nc"
+    )
+    path.parent.mkdir(parents=True)
+    stations = _write_legacy_station_signal(path)
+    with xr.open_dataset(path) as original:
+        original_signal = original["signal_high_wind"].values.copy()
+        original_signal_attrs = dict(original["signal_high_wind"].attrs)
+    args = SimpleNamespace(model="NESM3", station_id_only=True)
+
+    assert patch_low_resource._process_file(path, args, stations) is True
+    with xr.open_dataset(path) as migrated:
+        assert "station_id" in migrated.coords
+        np.testing.assert_array_equal(
+            migrated["station_id"].values,
+            patch_low_resource.sm.station_ids(
+                "ssp126", "wind", stations["lon"], stations["lat"]
+            ),
+        )
+        np.testing.assert_array_equal(
+            migrated["signal_high_wind"].values, original_signal
+        )
+        assert dict(migrated["signal_high_wind"].attrs) == original_signal_attrs
+    assert patch_low_resource._process_file(path, args, stations) is False
+
+
+def test_e2_rejects_existing_incorrect_station_id(tmp_path: Path) -> None:
+    path = (
+        tmp_path
+        / "Germany/ssp126/"
+        "station_signals_wind_NESM3_Germany_ssp126_2015-2060.nc"
+    )
+    path.parent.mkdir(parents=True)
+    stations = _write_legacy_station_signal(
+        path,
+        station_id_values=["0" * 20, "1" * 20],
+    )
+    args = SimpleNamespace(model="NESM3", station_id_only=True)
+    with pytest.raises(ValueError, match="重算结果"):
+        patch_low_resource._process_file(path, args, stations)
+
+
+def test_e2_repairs_missing_scheme_attrs_for_correct_station_id(
+    tmp_path: Path,
+) -> None:
+    path = (
+        tmp_path
+        / "Germany/ssp126/"
+        "station_signals_wind_NESM3_Germany_ssp126_2015-2060.nc"
+    )
+    path.parent.mkdir(parents=True)
+    stations = pd.DataFrame(
+        {
+            "lon": [10.0, 11.0],
+            "lat": [50.0, 51.0],
+            "type": ["wind", "wind"],
+            "activation_year": [2030, 2040],
+            "capacity_gw": [1.0, 2.0],
+        }
+    )
+    ids = patch_low_resource.sm.station_ids(
+        "ssp126", "wind", stations["lon"], stations["lat"]
+    ).tolist()
+    _write_legacy_station_signal(path, station_id_values=ids)
+    args = SimpleNamespace(model="NESM3", station_id_only=True)
+
+    assert patch_low_resource._process_file(path, args, stations) is True
+    with xr.open_dataset(path) as ds:
+        assert "station_id" in ds.coords
+        assert ds.attrs["station_id_scheme"] == patch_low_resource.sm.STATION_ID_SCHEME
+        assert ds.attrs["station_id_coordinate_decimals"] == 4
+
+
+def test_e2_rejects_station_order_mismatch(tmp_path: Path) -> None:
+    path = (
+        tmp_path
+        / "Germany/ssp126/"
+        "station_signals_wind_NESM3_Germany_ssp126_2015-2060.nc"
+    )
+    path.parent.mkdir(parents=True)
+    stations = _write_legacy_station_signal(path).iloc[::-1].reset_index(drop=True)
+    args = SimpleNamespace(model="NESM3", station_id_only=True)
+    with pytest.raises(ValueError, match="坐标或顺序"):
+        patch_low_resource._process_file(path, args, stations)
 
 
 def _monitor_manifest(stage: str, tmp_path: Path) -> dict:

@@ -13,6 +13,10 @@ E2 读取未来容量因子和 ERA5Land `2015-2024` 固定阈值，生成或补�
 
 E1 文件存在时，E2 原位补写同一个 NetCDF；有场站但 E1 文件缺失时，E2 新建一个只含 `signal_low_resource` 的兼容 NetCDF。文件非空不能单独证明 E2 完成，因此 E2 还必须有本 campaign 的成功调度记录或本地持久化成功记录。
 
+E2 还提供独立的 `--station-id-only` 元数据迁移 campaign。该模式只严格校验或
+原子补齐 `station_id` 坐标及其方案属性，不读取 CF、低资源阈值，也不修改任何
+`signal_*` 数值。
+
 ## 2. 依赖、输入与输出
 
 E2 是独立 campaign，只有在 E1 campaign 全部进入终态并由用户明确启动 E2 后才能运行。启动 E2 监控器本身代表人工阶段授权；不能再以“全部 E1 文件非空”作为全局闸门，因为无场站单元不会产生 E1 文件，而有场站但缺少 E1 文件的单元需要由 E2 兜底建档。
@@ -45,6 +49,10 @@ wind 与 solar 文件独立，可以并发处理。每个 E2 作业先用当前 
 
 有场站时，目标 CF、阈值文件缺失或处理异常必须以非零状态退出。
 
+所有已有 E1 文件在判断是否跳过 `signal_low_resource` 前，必须先使用当前 SSP
+场站表核对场站数量、四位量化坐标和顺序，并校验或补齐 `station_id`。已有错误
+或重复 ID 必须失败，禁止静默覆盖。
+
 `data/grid_of_regions` 不参与 E2。
 
 ## 3. 作业生成器
@@ -65,6 +73,28 @@ python3 infos/hpc_step2_E2/create_step2_E2_jobs.py \
   --techs wind,solar \
   --years 2015-2060
 ```
+
+只迁移已有输出的 ID 元数据：
+
+```bash
+python3 infos/hpc_step2_E2/create_step2_E2_jobs.py \
+  --models NESM3,MIROC-ES2H,MPI-ESM1-2-HR,CANESM5 \
+  --regions Germany \
+  --scenarios ssp126,ssp245,ssp585 \
+  --techs wind,solar \
+  --years 2015-2060 \
+  --station-id-only
+```
+
+元数据模式使用独立的默认目录：
+
+```text
+--job-root ~/extreme_event_jobs/step2_E2_station_id
+--log-root ~/extreme_event_logs/step2_E2_station_id
+```
+
+该模式不要求 `--cf-root` 和 `--threshold-dir` 存在，也不会把它们写入作业命令。
+元数据 campaign ID、作业名前缀和普通科学 E2 campaign 相互独立。
 
 `--regions all` 只负责展开区域，仍生成逐区域作业。`ssp560` 会报错并提示使用 `ssp585`。
 
@@ -95,6 +125,10 @@ python3 infos/hpc_step2_E2/create_step2_E2_jobs.py \
 不设置 `#SBATCH --time`。每核约 3.5 GB，增加核数主要用于申请内存；常见数值库线程数固定为 1。
 
 生成器会在 manifest 中记录每个单元的 `station_count` 和 `has_stations`，但作业运行时仍重新读取场站表和边界作最终判断。生成器只生成脚本和 manifest，不提交作业。默认不覆盖 `signal_low_resource`；Agent 确认重试目标后，可对单个单元使用 `--overwrite` 和 `--force` 重新生成。
+
+`--station-id-only` 不接受 `--overwrite`。已有正确 ID 时幂等成功；已有错误 ID 时
+作业失败。迁移使用同目录临时副本，完成 xarray 坐标契约校验后通过
+`os.replace` 原子替换原文件。
 
 生成器不绑定服务器。若 E2 分配到多台服务器，应在每台服务器生成其负责的 campaign，并分别启动对应的本地监控实例。
 

@@ -15,12 +15,79 @@ import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 _ROOT = str(Path(__file__).resolve().parents[1])
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from grid_extreme_signals import station_match as sm
+
+
+# ---------------------------------------------------------------------
+# Stable station IDs
+# ---------------------------------------------------------------------
+
+class TestStationId:
+    def test_golden_value(self):
+        assert (
+            sm.station_id("ssp126", "wind", 10.0, 49.6)
+            == "d9ab5e4db8460f0b4dee"
+        )
+
+    def test_float32_round_trip_is_stable(self):
+        csv_id = sm.station_id("ssp126", "wind", 10.0, 49.6)
+        netcdf_id = sm.station_id(
+            "ssp126",
+            "wind",
+            float(np.float32(10.0)),
+            float(np.float32(49.6)),
+        )
+        assert csv_id == netcdf_id
+
+    def test_equivalent_longitude_conventions(self):
+        assert sm.station_id("ssp245", "wind", 359.0, 50.0) == sm.station_id(
+            "ssp245", "wind", -1.0, 50.0
+        )
+
+    def test_context_and_location_change_id(self):
+        base = sm.station_id("ssp126", "wind", 10.0, 49.6)
+        assert base != sm.station_id("ssp245", "wind", 10.0, 49.6)
+        assert base != sm.station_id("ssp126", "solar", 10.0, 49.6)
+        assert base != sm.station_id("ssp126", "wind", 10.001, 49.6)
+
+    @pytest.mark.parametrize(
+        ("scenario", "tech", "lon", "lat"),
+        [
+            ("ssp999", "wind", 10.0, 50.0),
+            ("ssp126", "hydro", 10.0, 50.0),
+            ("ssp126", "wind", np.nan, 50.0),
+            ("ssp126", "wind", 10.0, np.inf),
+            ("ssp126", "wind", 10.0, 91.0),
+        ],
+    )
+    def test_invalid_inputs_raise(self, scenario, tech, lon, lat):
+        with pytest.raises(ValueError):
+            sm.station_id(scenario, tech, lon, lat)
+
+    def test_duplicate_quantized_location_raises(self):
+        with pytest.raises(ValueError, match="重复"):
+            sm.station_ids(
+                "ssp126",
+                "wind",
+                [10.00001, 10.00002],
+                [50.00001, 50.00002],
+            )
+
+    def test_validate_rejects_wrong_id(self):
+        with pytest.raises(ValueError, match="重算结果"):
+            sm.validate_station_ids(
+                ["0" * 20],
+                "ssp126",
+                "wind",
+                [10.0],
+                [50.0],
+            )
 
 
 # ---------------------------------------------------------------------
@@ -231,6 +298,15 @@ class TestMatchAndGather:
                 assert f["match_idx1"].shape == (1, 4)
                 assert f["match_weight"].shape == (1, 4)
                 np.testing.assert_allclose(f["match_weight"][:].sum(axis=1), [1.0])
+            with xr.open_dataset(out_path) as ds:
+                assert "station_id" in ds.coords
+                assert ds["station_id"].sizes == {"station": 1}
+                np.testing.assert_array_equal(
+                    ds["station_id"].values,
+                    sm.station_ids("ssp126", "wind", [10.25], [0.25]),
+                )
+                assert ds.attrs["station_id_scheme"] == sm.STATION_ID_SCHEME
+                assert ds.attrs["station_id_coordinate_decimals"] == 4
 
 
 # ---------------------------------------------------------------------
