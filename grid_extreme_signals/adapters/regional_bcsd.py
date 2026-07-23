@@ -4,7 +4,7 @@
 
     {data_dir}/{model}/{region}/{model}/{var}_3h_bcsd_on_0p1deg_{region}_{model}_{scenario}_*.nc
 
-变量：pr、rsds、tas、uas、vas。时间分辨率为 3 小时，空间网格为规则经纬度。
+变量：hurs、pr、rsds、tas、uas、vas。时间分辨率为 3 小时，空间网格为规则经纬度。
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from grid_extreme_signals.time_alignment import (
     parse_years,
 )
 from grid_extreme_signals.unit_conversion import (
+    hurs_to_pct,
     pr_to_mmh,
     rsds_to_wm2,
     tas_to_celsius,
@@ -57,6 +58,20 @@ def _regional_bcsd_pr_units(units: str | None) -> str | None:
     if units is None or str(units).strip() == "":
         return "kg m-2 s-1"
     return units
+
+
+def _regional_bcsd_hurs_units(units: str | None) -> str:
+    """返回 regional BCSD 相对湿度单位。
+
+    当前生产 ``hurs_bcsd`` 文件缺少 ``units``，但该 BCSD 产品契约和实际值域
+    都是 0—100%。缺失属性时显式按百分比处理，随后仍由 ``hurs_to_pct`` 做范围
+    校验，避免把异常输入静默当成有效湿度。
+    """
+    if isinstance(units, bytes):
+        units = units.decode("utf-8")
+    if units is None or str(units).strip() == "":
+        return "%"
+    return str(units)
 
 
 class RegionalBcsdAdapter(WeatherAdapter):
@@ -187,10 +202,35 @@ class RegionalBcsdAdapter(WeatherAdapter):
             tas_units = None
             skipped_inputs["temp_C"] = "未找到 tas 文件"
 
+        # 可选：hurs（icing/hot_humid 信号需要）
+        try:
+            hurs_da, f_hurs, hurs_units = self._open_and_prepare(
+                task, "hurs", time_name, lat_name, lon_name
+            )
+            source_files.append(f_hurs)
+        except FileNotFoundError:
+            hurs_da = None
+            hurs_units = None
+            skipped_inputs["rh_pct"] = "未找到 hurs 文件"
+
         # 筛选目标年份
         uas_da = self._filter_year(uas_da, time_name, year)
         vas_da = self._filter_year(vas_da, time_name, year)
         wind_time = uas_da[time_name].values
+
+        spatial_inputs = {"vas": vas_da.to_dataset(name="vas")}
+        if tas_da is not None:
+            spatial_inputs["tas"] = tas_da.to_dataset(name="tas")
+        if hurs_da is not None:
+            spatial_inputs["hurs"] = hurs_da.to_dataset(name="hurs")
+        validate_same_spatial_grid(
+            uas_da.to_dataset(name="uas"),
+            spatial_inputs,
+            lat_name,
+            lon_name,
+        )
+
+        interp_desc = []
 
         # 必要时将 tas 插值到风速时间轴
         if tas_da is not None:
@@ -203,16 +243,38 @@ class RegionalBcsdAdapter(WeatherAdapter):
                     tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "tas 已插值到 uas/vas 时间轴"
+                interp_desc.append("tas→uas/vas")
             else:
                 temp_C = tas_to_celsius(
                     tas_da.values, tas_units,
                     allow_inference=self.allow_unit_inference,
                 )
-                time_alignment = "uas/vas 原生瞬时值"
         else:
             temp_C = None
-            time_alignment = "uas/vas 原生瞬时值"
+
+        rh_pct = None
+        if hurs_da is not None:
+            hurs_da = self._filter_year(hurs_da, time_name, year)
+            hurs_time = hurs_da[time_name].values
+            if not np.array_equal(hurs_time, wind_time):
+                logger.info("将 hurs 插值到风速时间轴")
+                hurs_values = interp_instantaneous_to_target(
+                    hurs_da, time_name, wind_time
+                )
+                interp_desc.append("hurs→uas/vas")
+            else:
+                hurs_values = hurs_da.values
+            rh_pct = hurs_to_pct(
+                hurs_values,
+                _regional_bcsd_hurs_units(hurs_units),
+                allow_inference=self.allow_unit_inference,
+            )
+
+        time_alignment = (
+            "、".join(interp_desc) + " 已插值"
+            if interp_desc
+            else "uas/vas 原生瞬时值"
+        )
 
         # 由分量计算风速
         wind_ms = np.sqrt(
@@ -233,9 +295,10 @@ class RegionalBcsdAdapter(WeatherAdapter):
         )
         if temp_C is not None:
             ds["temp_C"] = xr.DataArray(temp_C, dims=(time_name, lat_name, lon_name))
+        if rh_pct is not None:
+            ds["rh_pct"] = xr.DataArray(rh_pct, dims=(time_name, lat_name, lon_name))
 
         # 标记不可用输入
-        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
         skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
         skipped_inputs.setdefault("rsds", "风电信号不使用该变量")
         skipped_inputs.setdefault("precip_mmh", "风电信号不使用该变量")
@@ -300,12 +363,31 @@ class RegionalBcsdAdapter(WeatherAdapter):
                                task["model"], task["region"])
             skipped_inputs["precip_mmh"] = "未找到 pr 文件"
 
+        # 可选：hurs
+        hurs_da = None
+        hurs_units = None
+        try:
+            hurs_da, f_hurs, hurs_units = self._open_and_prepare(
+                task, "hurs", time_name, lat_name, lon_name
+            )
+            source_files.append(f_hurs)
+            hurs_da = self._filter_year(hurs_da, time_name, year)
+        except FileNotFoundError:
+            skipped_inputs["rh_pct"] = "未找到 hurs 文件"
+
         # 校验空间网格
+        spatial_inputs = {
+            "tas": tas_da.to_dataset(name="tas"),
+            "uas": uas_da.to_dataset(name="uas"),
+            "vas": vas_da.to_dataset(name="vas"),
+        }
+        if pr_da is not None:
+            spatial_inputs["pr"] = pr_da.to_dataset(name="pr")
+        if hurs_da is not None:
+            spatial_inputs["hurs"] = hurs_da.to_dataset(name="hurs")
         validate_same_spatial_grid(
             rsds_da.to_dataset(name="rsds"),
-            {"tas": tas_da.to_dataset(name="tas"),
-             "uas": uas_da.to_dataset(name="uas"),
-             "vas": vas_da.to_dataset(name="vas")},
+            spatial_inputs,
             lat_name, lon_name,
         )
 
@@ -314,6 +396,10 @@ class RegionalBcsdAdapter(WeatherAdapter):
         uas_time = uas_da[time_name].values
         need_interp_tas = not np.array_equal(tas_time, target_times)
         need_interp_wind = not np.array_equal(uas_time, target_times)
+        need_interp_hurs = (
+            hurs_da is not None
+            and not np.array_equal(hurs_da[time_name].values, target_times)
+        )
 
         if need_interp_tas:
             logger.info("将 tas 插值到 rsds 时间轴")
@@ -334,6 +420,21 @@ class RegionalBcsdAdapter(WeatherAdapter):
             wind_ms = np.sqrt(
                 uas_da.values.astype(np.float32) ** 2
                 + vas_da.values.astype(np.float32) ** 2
+            )
+
+        rh_pct = None
+        if hurs_da is not None:
+            if need_interp_hurs:
+                logger.info("将 hurs 插值到 rsds 时间轴")
+                hurs_values = interp_instantaneous_to_target(
+                    hurs_da, time_name, target_times
+                )
+            else:
+                hurs_values = hurs_da.values
+            rh_pct = hurs_to_pct(
+                hurs_values,
+                _regional_bcsd_hurs_units(hurs_units),
+                allow_inference=self.allow_unit_inference,
             )
 
         # rsds 单位转换（BCSD rsds 通常已经是 W m-2）
@@ -367,6 +468,10 @@ class RegionalBcsdAdapter(WeatherAdapter):
         }
         if precip_mmh is not None:
             data_vars["precip_mmh"] = xr.DataArray(precip_mmh, dims=(time_name, lat_name, lon_name))
+        if rh_pct is not None:
+            data_vars["rh_pct"] = xr.DataArray(
+                rh_pct, dims=(time_name, lat_name, lon_name)
+            )
 
         ds = xr.Dataset(
             data_vars,
@@ -378,7 +483,6 @@ class RegionalBcsdAdapter(WeatherAdapter):
         )
 
         # 标记不可用输入
-        skipped_inputs.setdefault("rh_pct", "BCSD 无湿度数据")
         skipped_inputs.setdefault("dust_aod", "BCSD 无沙尘数据")
 
         interp_desc = []
@@ -386,6 +490,8 @@ class RegionalBcsdAdapter(WeatherAdapter):
             interp_desc.append("tas→rsds")
         if need_interp_wind:
             interp_desc.append("uas/vas→rsds")
+        if need_interp_hurs:
+            interp_desc.append("hurs→rsds")
         time_alignment = ("rsds 半点时间轴，" + "、".join(interp_desc) + " 已插值") if interp_desc else "rsds 原生时间轴"
 
         return WeatherBundle(

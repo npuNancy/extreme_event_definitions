@@ -167,6 +167,59 @@ def rsds_to_wm2(
 
 
 # ---------------------------------------------------------------------------
+# 相对湿度
+# ---------------------------------------------------------------------------
+
+def hurs_to_pct(
+    arr: np.ndarray,
+    units: str | None,
+    *,
+    allow_inference: bool = False,
+) -> np.ndarray:
+    """将相对湿度统一为百分比，并校验物理范围。
+
+    支持百分比单位（``%``/``percent``/``pct``）和 0—1 比例单位
+    （``1``/``fraction``/``dimensionless``）。允许最多 1 个百分点的轻微
+    数值越界并裁剪到 ``[0, 100]``；更大的越界视为输入错误。
+    """
+    x = np.asarray(arr, dtype=np.float32)
+    units_l = (units or "").lower().replace(" ", "")
+    percent_units = {"%", "percent", "percentage", "pct"}
+    fraction_units = {"1", "fraction", "dimensionless", "unitless"}
+
+    if units_l in percent_units:
+        result = x
+    elif units_l in fraction_units:
+        result = x * 100.0
+    elif allow_inference:
+        finite = x[np.isfinite(x)]
+        if finite.size == 0:
+            result = x
+        elif float(np.nanmin(finite)) >= -0.01 and float(np.nanmax(finite)) <= 1.01:
+            result = x * 100.0
+        elif float(np.nanmin(finite)) >= -1.0 and float(np.nanmax(finite)) <= 101.0:
+            result = x
+        else:
+            raise ValueError(
+                "无法根据数值范围推断相对湿度单位；"
+                f"范围={float(np.nanmin(finite))}—{float(np.nanmax(finite))}"
+            )
+    else:
+        raise ValueError(
+            f"无法识别相对湿度单位：{units!r}。"
+            "如需按数值范围推断，请传入 allow_inference=True。"
+        )
+
+    finite_result = result[np.isfinite(result)]
+    if finite_result.size:
+        low = float(np.nanmin(finite_result))
+        high = float(np.nanmax(finite_result))
+        if low < -1.0 or high > 101.0:
+            raise ValueError(f"相对湿度超出允许范围：{low}—{high}%")
+    return np.clip(result, 0.0, 100.0).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # 相对湿度（Magnus 公式）
 # ---------------------------------------------------------------------------
 

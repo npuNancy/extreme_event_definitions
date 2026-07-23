@@ -33,6 +33,10 @@ class TestGetVarName:
         ds = _make_ds(tas_bcsd=[1.0], other=[2.0])
         assert get_var_name(ds, "tas") == "tas_bcsd"
 
+    def test_hurs_bcsd_suffix(self):
+        ds = _make_ds(hurs_bcsd=[85.0], other=[2.0])
+        assert get_var_name(ds, "hurs") == "hurs_bcsd"
+
     def test_plain_name(self):
         ds = _make_ds(tas=[1.0], other=[2.0])
         assert get_var_name(ds, "tas") == "tas"

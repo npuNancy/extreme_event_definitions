@@ -38,7 +38,7 @@ class TestStationsDirGuard:
 class TestSignalOutputFormat:
     def _run_simple_pipeline(self, tmp_path):
         """Helper: run a minimal pipeline with synthetic data."""
-        for var in ("tas", "uas", "vas", "rsds"):
+        for var in ("tas", "uas", "vas", "rsds", "hurs"):
             make_bcsd_dataset(tmp_path, var=var)
         args = Namespace(
             source="regional_bcsd",

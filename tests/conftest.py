@@ -49,7 +49,10 @@ def make_bcsd_dataset(
 
     # Variable values: use a simple pattern so results are predictable
     rng = np.random.RandomState(42)
-    values = rng.randn(nt, nlat, nlon).astype(np.float32)
+    if var == "hurs":
+        values = rng.uniform(40.0, 100.0, size=(nt, nlat, nlon)).astype(np.float32)
+    else:
+        values = rng.randn(nt, nlat, nlon).astype(np.float32)
 
     var_name = f"{var}_bcsd"
     ds = xr.Dataset(
@@ -221,7 +224,8 @@ def make_era5land_monthly(
 
 def _bcsd_units(var: str) -> str:
     return {"pr": "kg m-2 s-1", "rsds": "W m-2", "tas": "K",
-            "uas": "m s-1", "vas": "m s-1", "sfcWind": "m s-1"}.get(var, "unknown")
+            "uas": "m s-1", "vas": "m s-1", "sfcWind": "m s-1",
+            "hurs": "%"}.get(var, "unknown")
 
 
 def _cordex_units(var: str) -> str:
@@ -240,7 +244,7 @@ def _era5_units(var: str) -> str:
 @pytest.fixture
 def bcsd_data_dir(tmp_path):
     """Create a full set of BCSD files for regional_bcsd testing."""
-    for var in ("tas", "uas", "vas", "rsds", "pr"):
+    for var in ("tas", "uas", "vas", "rsds", "pr", "hurs"):
         make_bcsd_dataset(tmp_path, var=var)
     return str(tmp_path / "bcsd_outputs")
 

@@ -56,14 +56,14 @@ extreme_event_definitions/
 | **风电** | | | | |
 | signal_high_temp | ✅ | ✅ | ✅ | ✅ |
 | signal_high_wind | ✅ | ✅ | ✅ | ✅ |
-| signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
-| signal_hot_humid | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_icing | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_hot_humid | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | **光伏** | | | | |
 | signal_freezing_rain | ✅ | ✅* | ✅* | ✅ |
 | signal_rainstorm | ✅ | ✅* | ✅* | ✅ |
 | signal_cold_highwind | ✅ | ✅ | ✅ | ✅ |
-| signal_icing | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
-| signal_high_humidity | ❌ 无湿度 | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_icing | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
+| signal_high_humidity | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_dust | ❌ | ❌ | ❌ | ✅* 需 --dust_dir |
 | signal_low_resource | 场站级 Pipeline B | 场站级 Pipeline B | 场站级 Pipeline B | 需 CF 文件 |
 
@@ -155,7 +155,9 @@ python step2_split_E2_low_resource.py \
   `<入口名>_YYYYMMDD_HHMMSS.log`；日志行时间戳格式为 `YYYY-MM-DD HH:MM:SS`。
 - `step2_complete_extreme_events.py` 会调用场站流程并默认计算 `low_resource`。
 - `step2_split_E1_weather_extremes.py` 会强制附加 `--no_low_resource`。
-- `step2_split_E2_low_resource.py` 会先按 SSP、国家和技术类型筛选场站：无场站时成功跳过；有场站且 E1 文件存在时读取其中的 `match_method` 后补写；有场站但 E1 文件缺失时新建只含 `signal_low_resource` 的兼容文件。
+- E1 新文件原生包含稳定的 `station_id(station)` 辅助坐标。
+- `step2_split_E2_low_resource.py` 会先按 SSP、国家和技术类型筛选场站并严格校验或原子补齐 `station_id`：无场站时成功跳过；有场站且 E1 文件存在时读取其中的 `match_method` 后补写；有场站但 E1 文件缺失时新建只含 `signal_low_resource` 的兼容文件。
+- 对已有文件只迁移 ID 元数据时，使用 `--station-id-only`；该模式不读取 CF 和低资源阈值。
 
 ## 运行示例
 
@@ -295,7 +297,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 | 键 | 含义 | 单位 | 高度/来源 |
 |---|---|---|---|
 | temp_C | 气温 | °C | 2m (t2m−273.15) 或 tas |
-| rh_pct | 相对湿度 | % | 2m (Magnus: t2m+d2m) |
+| rh_pct | 相对湿度 | % | 2m（regional BCSD: hurs；ERA5-Land: Magnus t2m+d2m） |
 | wind_ms | 风速 | m/s | 10m (√(u10²+v10²)) 或 sfcWind |
 | precip_mmh | 降水 | mm/h | pr 转换 或 tp 去累积 |
 | rsds | 短波辐射 | W/m² | rsds 或 ssrd 去累积 |

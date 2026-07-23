@@ -5,12 +5,43 @@ import numpy as np
 import pytest
 
 from grid_extreme_signals.unit_conversion import (
+    hurs_to_pct,
     magnus_rh,
     pr_to_mmh,
     rsds_to_wm2,
     tas_to_celsius,
     wind_to_ms,
 )
+
+
+class TestHursToPct:
+    def test_percent_identity(self):
+        result = hurs_to_pct(np.array([0.0, 85.0, 100.0]), "%")
+        np.testing.assert_allclose(result, [0.0, 85.0, 100.0])
+
+    def test_fraction_to_percent(self):
+        result = hurs_to_pct(np.array([0.0, 0.85, 1.0]), "1")
+        np.testing.assert_allclose(result, [0.0, 85.0, 100.0])
+
+    def test_missing_unit_inference(self):
+        result = hurs_to_pct(
+            np.array([0.5, 0.85], dtype=np.float32),
+            None,
+            allow_inference=True,
+        )
+        np.testing.assert_allclose(result, [50.0, 85.0])
+
+    def test_missing_unit_without_inference_raises(self):
+        with pytest.raises(ValueError, match="相对湿度单位"):
+            hurs_to_pct(np.array([85.0]), None)
+
+    def test_small_overshoot_is_clipped(self):
+        result = hurs_to_pct(np.array([-0.5, 100.5]), "%")
+        np.testing.assert_allclose(result, [0.0, 100.0])
+
+    def test_large_overshoot_raises(self):
+        with pytest.raises(ValueError, match="超出允许范围"):
+            hurs_to_pct(np.array([120.0]), "%")
 
 
 class TestTasToCelsius:
