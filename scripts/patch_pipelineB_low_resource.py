@@ -566,7 +566,7 @@ def _validate_station_id_file(
             raise ValueError(f"{path}: station_id 顺序与 SSP 场站清单不一致")
         if ds.attrs.get("station_id_scheme") != sm.STATION_ID_SCHEME:
             raise ValueError(f"{path}: station_id_scheme 不正确")
-        decimals = int(ds.attrs.get("station_id_coordinate_decimals", -1))
+        decimals = int(np.asarray(ds.attrs.get("station_id_coordinate_decimals", -1)).item())
         if decimals != sm.STATION_ID_COORDINATE_DECIMALS:
             raise ValueError(f"{path}: station_id_coordinate_decimals 不正确")
 
@@ -626,7 +626,7 @@ def _ensure_station_id_atomic(
             raw_decimals = out.attrs.get("station_id_coordinate_decimals")
             if (
                 raw_decimals is not None
-                and int(raw_decimals) != sm.STATION_ID_COORDINATE_DECIMALS
+                and int(np.asarray(raw_decimals).item()) != sm.STATION_ID_COORDINATE_DECIMALS
             ):
                 raise ValueError(
                     f"{path}: station_id_coordinate_decimals 与当前契约不一致"
