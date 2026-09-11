@@ -54,6 +54,8 @@ def low_resource_signal(
     lon=None,
     base_mask=None,
     window_steps=None,
+    clim_tbl=None,
+    thr=None,
     mark_next_step=True,
 ):
     """计算当前技术的 BCSD 低资源信号。"""
@@ -62,6 +64,8 @@ def low_resource_signal(
     kwargs = {
         "base_mask": base_mask,
         "window_steps": window_steps,
+        "clim_tbl": clim_tbl,
+        "thr": thr,
         "mark_next_step": mark_next_step,
     }
     if tech == "solar":
@@ -80,6 +84,8 @@ def all_signals(
     lon=None,
     base_mask=None,
     window_steps=None,
+    clim_tbl=None,
+    thr=None,
     skip_missing=True,
 ):
     """一次返回普通事件和 BCSD 低资源事件。"""
@@ -92,6 +98,8 @@ def all_signals(
         lon=lon,
         base_mask=base_mask,
         window_steps=window_steps,
+        clim_tbl=clim_tbl,
+        thr=thr,
     )
     return masks
 
