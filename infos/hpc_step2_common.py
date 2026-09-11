@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Step2 E1/E2 Slurm 生成器共享约定。"""
+"""统一 step2 Slurm 生成器共享约定。"""
 from __future__ import annotations
 
 import hashlib
@@ -157,6 +157,7 @@ def job_name(
         "E1": "s2e1",
         "E2": "s2e2",
         "E2ID": "s2e2id",
+        "STEP2": "s2",
     }.get(stage)
     if stage_token is None:
         raise ValueError(f"不支持的 step2 作业阶段：{stage}")

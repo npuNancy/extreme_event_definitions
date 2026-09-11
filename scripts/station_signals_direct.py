@@ -9,7 +9,7 @@
   3. 将每个场站匹配到网格（默认最近邻，可选规则经纬度双线性；逐文件把经度归一到
      ``[-180, 180)``；BCSD 经度约定随区域而变）；
   4. 将标准化气象变量按指定空间方法提取到场站，形成 ``(time, n_stations)`` 数组，并运行
-     ``registry.simple_signals``；
+     普通事件和基于 BCSD ``wind_ms``/``rsds`` 的低资源事件；
   5. 应用投产年份掩膜（投产前信号为 0）和距离容差掩膜，然后按 ``(region, tech, scenario)``
      写出场站级 NetCDF。
 
@@ -48,7 +48,7 @@ if _PROJECT_ROOT not in sys.path:
 import registry  # noqa: E402
 from grid_extreme_signals.adapters.regional_bcsd import RegionalBcsdAdapter  # noqa: E402
 from grid_extreme_signals import station_match as sm  # noqa: E402
-from grid_extreme_signals import cf_low_resource  # noqa: E402
+from tools import common  # noqa: E402
 from tools.logging_utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger("station_signals_direct")
@@ -86,21 +86,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="场站到网格数据抽取方法：nearest 或 bilinear；默认 nearest。")
     p.add_argument("--output_root", default="outputs/station_signals")
     p.add_argument("--compress_level", type=int, default=4)
-    p.add_argument("--cf_root", default="data/cfs",
-                   help="容量因子数据根目录，用于默认启用的低资源事件。")
-    p.add_argument("--lowres_threshold_dir",
-                   default=str(cf_low_resource.default_threshold_dir()),
-                   help="ERA5Land SSP 场站稀疏低资源阈值目录。")
-    p.add_argument("--lowres_baseline_years", default=None,
-                   help=argparse.SUPPRESS)
-    p.add_argument("--lowres_cf_years", default="2015-2060",
-                   help="CF 文件覆盖年份，用于查找 allmonths 文件。")
-    p.add_argument("--lowres_station_chunk", type=int, default=128,
-                   help="低资源事件计算的场站块大小。")
-    p.add_argument("--lowres_time_chunk", type=int, default=512,
-                   help="从 CF 文件读取的时间块大小。")
-    p.add_argument("--no_low_resource", action="store_true",
-                   help="跳过默认启用的风电/光伏低资源事件。")
     p.add_argument("--no_activation_mask", action="store_true",
                    help="保留所有年份信号（不把投产前年份置零）。")
     p.add_argument("--allow_unit_inference", action="store_true")
@@ -169,6 +154,59 @@ def _skip(path: str, overwrite: bool) -> bool:
     return os.path.exists(path)
 
 
+LOW_RESOURCE_BASELINE_YEARS = (2015, 2024)
+EXPECTED_BCSD_TIMESTEP_HOURS = 3.0
+
+
+def _validate_low_resource_time_axis(times: np.ndarray) -> tuple[pd.DatetimeIndex, float]:
+    """校验 BCSD 连续时间轴并返回 pandas 时间轴和步长。"""
+    try:
+        if np.asarray(times).dtype.kind == "O" and len(times):
+            # 365_day/no-leap cftime 日期可按字段映射到 pandas；月、日、小时语义保持不变。
+            time_index = pd.DatetimeIndex(
+                pd.Timestamp(
+                    int(value.year), int(value.month), int(value.day),
+                    int(getattr(value, "hour", 0)),
+                    int(getattr(value, "minute", 0)),
+                    int(getattr(value, "second", 0)),
+                )
+                for value in times
+            )
+        else:
+            time_index = pd.DatetimeIndex(times)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("BCSD 低资源时间轴必须可转换为 pandas DatetimeIndex") from exc
+    if time_index.has_duplicates or not time_index.is_monotonic_increasing:
+        raise ValueError("BCSD 低资源时间轴必须严格递增且不能重复")
+    if len(time_index) < 2:
+        raise ValueError("BCSD 低资源计算至少需要两个时间点")
+    time_ns = time_index.to_numpy(dtype="datetime64[ns]").astype("int64")
+    diffs = np.diff(time_ns).astype(np.float64) / 3.6e12
+    if not np.allclose(diffs, diffs[0], rtol=0.0, atol=1e-8):
+        raise ValueError("BCSD 低资源时间轴步长不均匀")
+    timestep_hours = float(diffs[0])
+    if not np.isclose(timestep_hours, EXPECTED_BCSD_TIMESTEP_HOURS, rtol=0.0, atol=1e-8):
+        raise ValueError(
+            f"Regional BCSD 低资源时间步长必须为 {EXPECTED_BCSD_TIMESTEP_HOURS:g}h，"
+            f"实际为 {timestep_hours:g}h"
+        )
+    return time_index, timestep_hours
+
+
+def _low_resource_baseline_mask(time_index: pd.DatetimeIndex) -> np.ndarray:
+    """返回固定 2015-2024 基线掩膜，并校验请求时间范围覆盖基线。"""
+    years = time_index.year.to_numpy(np.int64)
+    if years.min() > LOW_RESOURCE_BASELINE_YEARS[0] or years.max() < LOW_RESOURCE_BASELINE_YEARS[1]:
+        raise ValueError(
+            "低资源计算要求 --years 覆盖完整基线期 2015-2024；"
+            f"实际为 {years.min()}-{years.max()}"
+        )
+    mask = (years >= LOW_RESOURCE_BASELINE_YEARS[0]) & (years <= LOW_RESOURCE_BASELINE_YEARS[1])
+    if not mask.any():
+        raise ValueError("低资源基线期 2015-2024 没有有效时间点")
+    return mask
+
+
 # =====================================================================
 # 分技术类型处理
 # =====================================================================
@@ -197,6 +235,7 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
     spatial_interp = _validate_spatial_interp(args.source, args.spatial_interp)
     match: sm.StationMatch | sm.StationSpatialWeights | None = None
     masks_acc: dict[str, list[np.ndarray]] = {}
+    resource_acc: list[np.ndarray] = []
     times_acc: list[np.ndarray] = []
     skipped_inputs: dict[str, str] = {}
 
@@ -243,6 +282,12 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
             raise RuntimeError(f"[{region}/{tech}/{year}] 未生成任何普通极端事件信号")
         for name, arr in masks.items():
             masks_acc.setdefault(name, []).append(arr.astype(bool))
+        resource_name = registry.LOWRES_RESOURCE[tech]
+        if resource_name not in weather:
+            raise RuntimeError(
+                f"[{region}/{tech}/{year}] 缺少低资源必要变量 {resource_name}"
+            )
+        resource_acc.append(weather[resource_name].astype(np.float32))
         times_acc.append(times)
         del bundle, weather, masks
 
@@ -253,6 +298,28 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
     # 跨年份拼接
     times_all = np.concatenate(times_acc)
     masks_all = {name: np.concatenate(parts, axis=0) for name, parts in masks_acc.items()}
+    resource_all = np.concatenate(resource_acc, axis=0)
+    time_index, timestep_hours = _validate_low_resource_time_axis(times_all)
+    baseline_mask = _low_resource_baseline_mask(time_index)
+    finite_baseline = np.isfinite(resource_all[baseline_mask]).sum(axis=0)
+    if np.any(finite_baseline < 8):
+        bad_count = int(np.sum(finite_baseline < 8))
+        raise ValueError(
+            f"{bad_count} 个场站在 2015-2024 基线期没有足够的 BCSD 资源值"
+        )
+    station_lats = match.stations["lat"].to_numpy(np.float64)
+    station_lons = match.stations["lon"].to_numpy(np.float64)
+    window_steps = common.window_steps_for_hours(timestep_hours)
+    low_resource_weather = {registry.LOWRES_RESOURCE[tech]: resource_all}
+    masks_all["low_resource"] = registry.low_resource_signal(
+        tech,
+        low_resource_weather,
+        time_index,
+        lat=station_lats,
+        lon=station_lons,
+        base_mask=baseline_mask,
+        window_steps=window_steps,
+    ).astype(bool)
 
     # 投产年份掩膜 + 距离掩膜
     act = _activation_time_mask(
@@ -261,71 +328,32 @@ def _process_tech(adapter, args, country_stations: dict[str, pd.DataFrame],
     )
     valid = match.valid[None, :]  # (1, n_sta)
 
-    lowres_attrs = {}
-    lowres_valid = None
-    lowres_skip_reason = None
-    if not args.no_low_resource:
-        cf_file = cf_low_resource.find_cf_file(
-            args.cf_root, args.source, args.model, scenario, tech,
-            region=region, years=args.lowres_cf_years,
-        )
-        if cf_file is None:
-            lowres_skip_reason = f"未找到 CF 文件：cf_root={args.cf_root}"
-        else:
-            threshold_file = cf_low_resource.sparse_threshold_file_for_scenario_tech(
-                args.lowres_threshold_dir,
-                scenario,
-                tech,
-                args.lowres_baseline_years or "2015-2024",
-            )
-            if not threshold_file.exists():
-                # 新流程默认使用稀疏阈值；保留旧完整阈值文件名兼容手工测试。
-                threshold_file = cf_low_resource.threshold_file_for_tech(
-                    args.lowres_threshold_dir,
-                    tech,
-                    args.lowres_baseline_years or "2015-2024",
-                )
-            if not threshold_file.exists():
-                lowres_skip_reason = f"未找到 ERA5Land 低资源阈值文件：{threshold_file}"
-            else:
-                try:
-                    result = cf_low_resource.compute_station_low_resource(
-                        cf_file,
-                        tech,
-                        times_all,
-                        match.stations["lat"].to_numpy(np.float64),
-                        match.stations["lon"].to_numpy(np.float64),
-                        threshold_file=threshold_file,
-                        max_dist=args.max_dist,
-                        spatial_interp=spatial_interp,
-                        station_chunk=args.lowres_station_chunk,
-                        time_chunk=args.lowres_time_chunk,
-                    )
-                    masks_all["low_resource"] = result.mask.astype(bool)
-                    lowres_valid = result.valid
-                    lowres_attrs = cf_low_resource.attrs(result)
-                except Exception as e:
-                    logger.warning("[%s/%s] 低资源计算失败：%s", region, tech, e)
-                    lowres_skip_reason = f"低资源计算失败：{e}"
-    else:
-        lowres_skip_reason = "用户通过 --no_low_resource 关闭"
-
     supported = sorted(masks_all.keys())
     all_events = set(registry.SIMPLE[tech].keys())
     all_events.add("low_resource")
     skipped = sorted(all_events - set(supported))
     skipped_reasons = {ev: skipped_inputs.get(_first_req_var(tech, ev), f"{ev} 缺少输入")
                        for ev in skipped}
-    if "low_resource" in skipped and lowres_skip_reason:
-        skipped_reasons["low_resource"] = lowres_skip_reason
 
     out_masks: dict[str, np.ndarray] = {}
     for name, arr in masks_all.items():
         event_valid = valid
-        if name == "low_resource" and lowres_valid is not None:
-            event_valid = valid & lowres_valid[None, :]
         arr = arr & act & event_valid  # 投产前年份和超距离容差场站置零
         out_masks[f"signal_{name}"] = arr.astype(np.int8)
+
+    lowres_attrs = {
+        "low_resource_source": "regional_bcsd",
+        "low_resource_resource_variable": registry.LOWRES_RESOURCE[tech],
+        "low_resource_resource_units": "m s-1" if tech == "wind" else "W m-2",
+        "low_resource_baseline_years": "2015-2024",
+        "low_resource_climatology": "month_hour",
+        "low_resource_percentile": "5",
+        "low_resource_window_hours": "24",
+        "low_resource_window_steps": str(window_steps),
+        "low_resource_timestep_hours": f"{timestep_hours:g}",
+        "low_resource_mark_next_step": "true",
+        "low_resource_solar_night_filter": str(tech == "solar").lower(),
+    }
 
     sm.write_station_signals(
         out_path, out_masks, times_all, match, tech,

@@ -1,14 +1,13 @@
 """事件注册表 —— 汇总所有"每事件一个文件"的定义，方便批量调用。
 
-简单阈值事件(只需 weather 字典):
+普通阈值事件(只需 weather 字典):
     from registry import SIMPLE, simple_signals
     masks = simple_signals("solar", weather)        # {name:(T,K) bool}
     one  = SIMPLE["wind"]["icing"].signal(weather)
 
-低资源事件(需资源时序, 单独调用各自模块的 signal):
-    from events import wind_low_resource, solar_low_resource
-    lr_w = wind_low_resource.signal(wind10m, time, base_mask=...)
-    lr_s = solar_low_resource.signal(rsds, time, lat, lon, base_mask=...)
+低资源事件使用 BCSD 标准化资源时序，与普通事件在同一 pipeline 中写出:
+    masks = all_signals("solar", weather, time, lat=lat, lon=lon,
+                        base_mask=base_mask, window_steps=8)
 """
 import logging
 
@@ -20,14 +19,15 @@ from tools.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
-# 简单阈值事件(输入仅 weather 字典)
+# 普通阈值事件(输入仅 weather 字典)
 SIMPLE = {
     "wind": {m.NAME: m for m in [wind_icing, wind_high_temp, wind_hot_humid, wind_high_wind]},
     "solar": {m.NAME: m for m in [solar_freezing_rain, solar_dust, solar_rainstorm,
                                   solar_high_humidity, solar_cold_highwind, solar_icing]},
 }
-# 低资源事件(需资源时序, 签名不同)
+# 低资源事件(使用 BCSD 的 wind_ms 或 rsds)
 LOWRES = {"wind": wind_low_resource, "solar": solar_low_resource}
+LOWRES_RESOURCE = {"wind": "wind_ms", "solar": "rsds"}
 
 
 def simple_signals(tech, weather, skip_missing=True):
@@ -45,12 +45,63 @@ def simple_signals(tech, weather, skip_missing=True):
     return out
 
 
+def low_resource_signal(
+    tech,
+    weather,
+    time,
+    *,
+    lat=None,
+    lon=None,
+    base_mask=None,
+    window_steps=None,
+    mark_next_step=True,
+):
+    """计算当前技术的 BCSD 低资源信号。"""
+    resource_name = LOWRES_RESOURCE[tech]
+    resource = weather[resource_name]
+    kwargs = {
+        "base_mask": base_mask,
+        "window_steps": window_steps,
+        "mark_next_step": mark_next_step,
+    }
+    if tech == "solar":
+        if lat is None or lon is None:
+            raise ValueError("solar 低资源计算需要场站 lat/lon")
+        kwargs.update(lat=lat, lon=lon)
+    return LOWRES[tech].signal(resource, time, **kwargs)
+
+
+def all_signals(
+    tech,
+    weather,
+    time,
+    *,
+    lat=None,
+    lon=None,
+    base_mask=None,
+    window_steps=None,
+    skip_missing=True,
+):
+    """一次返回普通事件和 BCSD 低资源事件。"""
+    masks = simple_signals(tech, weather, skip_missing=skip_missing)
+    masks["low_resource"] = low_resource_signal(
+        tech,
+        weather,
+        time,
+        lat=lat,
+        lon=lon,
+        base_mask=base_mask,
+        window_steps=window_steps,
+    )
+    return masks
+
+
 def list_all():
-    logger.info("简单阈值事件：")
+    logger.info("普通阈值事件：")
     for tech in ("wind", "solar"):
         for name, m in SIMPLE[tech].items():
             logger.info("  [%s] %-6s %-14s : %s", tech, m.LABEL, name, m.EXPR)
-    logger.info("低资源事件（需资源时序）：")
+    logger.info("低资源事件（BCSD 资源时序）：")
     for tech, m in LOWRES.items():
         logger.info("  [%s] %-6s %-14s : %s", tech, m.LABEL, m.NAME, m.EXPR)
 

@@ -2,15 +2,15 @@
 
 > 最终确认的事件阈值（真实场站 2023-2024 实测 + 中美采样网格验证）。
 > **每种天气一个文件**，改阈值只动对应文件顶部常量。仅依赖 numpy / pandas / xarray。
+>
+> 当前场站级生产口径：低资源事件直接使用 Regional BCSD 的 `wind_ms`/`rsds`，与普通事件
+> 在 `step2_complete_extreme_events.py` 中一次计算；不再读取 CF 或 ERA5Land CF 阈值。
 
 ## 目录结构
 ```
 extreme_event_definitions/
   README.md
-  step1_low_resource_thresholds.py          # ① ERA5Land 2015-2024 风光 CF 预计算低资源阈值
-  step2_complete_extreme_events.py          # 两阶段②：未来极端事件，包含 low_resource
-  step2_split_E1_weather_extremes.py        # 三阶段②：未来极端事件，不包含 low_resource
-  step2_split_E2_low_resource.py            # 三阶段③：补写未来 low_resource 到三阶段②输出
+  step2_complete_extreme_events.py          # 统一：BCSD 普通事件 + low_resource
   registry.py                              # 汇总注册表: simple_signals() 一次取全部
   tools/
     common.py                              # 低资源共享算法(24h滚动+clim288+P5, 太阳高度角)
@@ -36,6 +36,9 @@ extreme_event_definitions/
     signal_runner.py                         # 核心流程：加载→标准化→检测→写入
   scripts/
     generate_multi_source_grid_signals.py  # 统一 CLI 入口
+  infos/hpc_step2/
+    create_step2_jobs.py                   # 统一场站级 Slurm 作业生成器
+    completion_status/monitor_step2_jobs.py # 统一作业监控器
   tests/                                    # 单元测试
   document/                                # 文档
 ```
@@ -65,7 +68,7 @@ extreme_event_definitions/
 | signal_icing | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_high_humidity | ✅ 需 hurs | ❌ 无湿度 | ❌ 无湿度 | ✅ |
 | signal_dust | ❌ | ❌ | ❌ | ✅* 需 --dust_dir |
-| signal_low_resource | 场站级 Pipeline B | 场站级 Pipeline B | 场站级 Pipeline B | 需 CF 文件 |
+| signal_low_resource | 场站级 Pipeline B | 场站级 Pipeline B | 场站级 Pipeline B | 不在网格流程计算 |
 
 ✅* = 需要 pr 文件或额外参数；❌ = 因缺少输入变量被跳过
 
@@ -75,29 +78,11 @@ extreme_event_definitions/
 
 ## 推荐流程入口
 
-当前低资源事件使用 ERA5Land 2015-2024 风光 CF 先计算阈值；未来模式/SSP
-只负责被判定是否发生事件。项目根目录提供两种入口组合。
-
-`step1_low_resource_thresholds.py` 计算 ERA5Land 稀疏阈值时默认使用
-`--threshold_interp nearest_valid`，即为每个场站选择最近的 ERA5Land 有效格点，
-以避开近海无 CF 数据的格点；如需沿用四点双线性，可显式传入
-`--threshold_interp bilinear`。
-
-计算 `ssp245` 或 `ssp585` 时，step1 默认会尝试从同目录下已完成的 `ssp126`
-同技术类型阈值文件复用重叠 `(lon, lat, type)` 场站，只计算非交集场站；
-如需强制完整计算，可传入 `--no_reuse_thresholds`。
-
-### 两阶段流程
-
-适用于未来模式/SSP 的目标 CF 已经可用，希望一次性输出所有事件：
+当前唯一场站级生产入口是 `step2_complete_extreme_events.py`。生产年份必须是连续范围并覆盖
+`2015-2024`，默认建议使用 `2015-2060`；低资源 24 小时窗口在 Regional BCSD 3 小时数据
+上使用 8 个时间步。
 
 ```bash
-python step1_low_resource_thresholds.py \
-  --cf_root data/cfs \
-  --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --tech both \
-  --baseline_years 2015-2024
-
 python step2_complete_extreme_events.py \
   --source regional_bcsd \
   --data_dir data/bcsd_outputs \
@@ -105,48 +90,10 @@ python step2_complete_extreme_events.py \
   --scenario ssp126 \
   --stations_csv data/stations/stations_SSP1-2.6.csv \
   --region all \
-  --years 2030-2060 \
+  --years 2015-2060 \
   --tech both \
   --allow_unit_inference \
   --allow_missing_optional
-```
-
-### 三阶段流程
-
-适用于先判断普通极端事件，等未来模式/SSP 的 CF 准备好后再补写低资源事件：
-
-```bash
-python step1_low_resource_thresholds.py \
-  --cf_root data/cfs \
-  --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --scenario ssp126 \
-  --tech both \
-  --baseline_years 2015-2024
-
-python step2_split_E1_weather_extremes.py \
-  --source regional_bcsd \
-  --data_dir data/bcsd_outputs \
-  --model NESM3 \
-  --scenario ssp126 \
-  --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --region all \
-  --years 2030-2060 \
-  --tech both \
-  --allow_unit_inference \
-  --allow_missing_optional
-
-python step2_split_E2_low_resource.py \
-  --output_root outputs/station_signals/regional_bcsd/NESM3 \
-  --cf_root data/cfs \
-  --threshold_dir outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024 \
-  --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --shp data/maps/natural_earth/ne_110m_admin_0_countries.shp \
-  --model NESM3 \
-  --region Germany \
-  --scenario ssp126 \
-  --tech wind \
-  --years 2030-2060 \
-  --overwrite
 ```
 
 说明：
@@ -154,10 +101,8 @@ python step2_split_E2_low_resource.py \
 - 根目录流程入口和 `scripts/` CLI 会把日志写入 `logs/`，文件名格式为
   `<入口名>_YYYYMMDD_HHMMSS.log`；日志行时间戳格式为 `YYYY-MM-DD HH:MM:SS`。
 - `step2_complete_extreme_events.py` 会调用场站流程并默认计算 `low_resource`。
-- `step2_split_E1_weather_extremes.py` 会强制附加 `--no_low_resource`。
-- E1 新文件原生包含稳定的 `station_id(station)` 辅助坐标。
-- `step2_split_E2_low_resource.py` 会先按 SSP、国家和技术类型筛选场站并严格校验或原子补齐 `station_id`：无场站时成功跳过；有场站且 E1 文件存在时读取其中的 `match_method` 后补写；有场站但 E1 文件缺失时新建只含 `signal_low_resource` 的兼容文件。
-- 对已有文件只迁移 ID 元数据时，使用 `--station-id-only`；该模式不读取 CF 和低资源阈值。
+- 统一入口会在同一输出文件中写入普通事件和 `signal_low_resource`，并原生写入稳定的 `station_id(station)` 坐标。
+- 低资源基线和 P5 由当前任务的 BCSD 场站资源序列计算；缺少资源、时间轴不连续或未覆盖基线时作业失败。
 
 ## 运行示例
 
@@ -209,7 +154,7 @@ python scripts/generate_multi_source_grid_signals.py \
 
 场站选址结果已是 **0.1°（≈10km）级别**（`data/stations/stations_SSP*.csv`，全球范围）。我们只对**有气象数据的国家**（BCSD 26 国 + China + NAM-12）范围内的场站计算极端天气信号。
 
-- **Pipeline B（直接场站）** `scripts/station_signals_direct.py`：跳过网格，复用适配器标准化气象 → 最近邻 gather 到场站 → `registry.simple_signals` 检测 → 写场站级信号。
+- **Pipeline B（直接场站）** `scripts/station_signals_direct.py`：跳过网格，复用适配器标准化气象 → 最近邻 gather 到场站 → 普通事件与 BCSD 低资源事件统一检测 → 写场站级信号。
 
 产出**场站级 NetCDF**（`dims: time, station`；`signal_<event>(time,station)` + 场站元数据）。
 
@@ -239,18 +184,9 @@ python scripts/station_signals_direct.py \
 | `--overwrite` | `False` | 覆盖已有输出 |
 | `--dry_run` | `False` | 仅打印任务计划 |
 | `--spatial_interp` | `nearest` | 场站到网格数据抽取方法；规则经纬度网格支持 `nearest`/`bilinear`，NAM-12 当前只支持 `nearest` |
-| `--lowres_threshold_dir` | `outputs/low_resource_thresholds/sparse_station_ERA5Land_2015-2024` | ERA5Land 2015-2024 SSP 场站稀疏低资源阈值目录 |
+| `--years` | `2015-2060`（生产建议） | 必须为连续范围并覆盖低资源基线 2015-2024 |
 
-场站级低资源阈值需先按 SSP + 技术类型预计算，例如：
-
-```bash
-python scripts/precompute_station_low_resource_thresholds.py \
-  --cf_root data/cfs \
-  --stations_csv data/stations/stations_SSP1-2.6.csv \
-  --scenario ssp126 \
-  --tech both \
-  --baseline_years 2015-2024
-```
+场站级低资源事件不需要额外的 CF 根目录或阈值目录。
 
 ### 天气中间文件
 
@@ -279,7 +215,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 | 待办 | 卡点 |
 |---|---|
 | **场站级信号**（`station_signals_direct.py`） | ✅ 已实现（regional_bcsd）：见上方「场站级信号」。China/NAM-12 待数据落盘 |
-| **低资源事件**（`signal_low_resource`） | ✅ 场站级默认启用；依赖目标 CF 文件和 ERA5Land 2015-2024 阈值文件 |
+| **低资源事件**（`signal_low_resource`） | ✅ 场站级默认启用；使用当前 BCSD `wind_ms`/`rsds` 和 2015-2024 基线 |
 | **MERRA-2 沙尘全网格重采样** | 第一阶段只做简单最近邻 |
 | **跨区域拼接** | — |
 | **不同来源结果的统一评估** | — |
@@ -289,7 +225,7 @@ python scripts/precompute_station_low_resource_thresholds.py \
 1. **3 小时数据与逐小时数据的暴露率不能直接比较**：BCSD/CMFD/CORDEX 数据的时间分辨率不同，极端事件的暴露小时数不能跨分辨率直接比较。
 2. **NAM-12 使用旋转极网格**：输出维度为 `(time, rlat, rlon)`，保留二维 `lat(rlat, rlon)` 和 `lon(rlat, rlon)` 辅助坐标。
 3. **ERA5-Land 累积量需要跨月边界反累积**：`tp` 和 `ssrd` 是日内累积量，在月初 00:00 需要读取前月最后一小时作为差分起点。
-4. **低资源事件阈值固定**：阈值来自 ERA5Land 2015-2024 CF 预计算结果；不同模式/SSP 不再用自身 CF 重新估计阈值。
+4. **低资源事件输入**：阈值由当前任务 BCSD `wind_ms`/`rsds` 的 2015-2024 基线计算，不读取 CF。
 5. **旧真实场站脚本已迁移到 `legacy_station_pipeline/`**：推荐使用 `python -m legacy_station_pipeline.xxx` 运行。
 6. **默认仅写出 `extreme_signals_*.nc`**：只有显式传入 `--save_weather` 才保存 `weather_*.nc`。
 

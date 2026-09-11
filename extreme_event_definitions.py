@@ -12,7 +12,7 @@
   wind_ms       10 米风速           [m/s]     (sqrt(u10^2 + v10^2))
   precip_mmh    逐小时降水          [mm/h]    (ERA5-Land tp, 已去累积)
   dust_aod      沙尘气溶胶光学厚度  [1]       (MERRA-2 DUEXTTAU, 逐小时)
-  resource      资源量             [-]        (风: 10m 风速; 光: 地表辐照 rsds W/m^2)
+  resource      资源量             [-]        (风: BCSD 10m 风速 wind_ms; 光: BCSD 地表辐照 rsds)
                   -- 仅 low_resource 事件需要; 见 low_resource_signal()
 
 算子约定: 低温/结冰/冻雨/低温大风 用 "<"; 高温 用 ">"; 高湿 用 ">="; 降水/风速/沙尘 用 ">".
@@ -88,20 +88,42 @@ def event_signal(tech: str, name: str, weather: dict) -> np.ndarray:
     return np.asarray(m, dtype=bool)
 
 
-def all_event_signals(tech: str, weather: dict) -> dict:
-    """一次返回该技术的全部简单阈值事件掩码 {name: (T,K) bool}。
-    (low_resource 需单独调用 low_resource_signal)"""
-    return {name: event_signal(tech, name, weather) for name in EVENT_DEFS[tech]}
+def all_event_signals(tech: str, weather: dict, time=None, *, lat=None, lon=None,
+                      base_mask=None, window_steps=None) -> dict:
+    """返回普通事件；提供 *time* 时同时返回 BCSD 低资源事件。"""
+    out = {name: event_signal(tech, name, weather) for name in EVENT_DEFS[tech]}
+    if time is not None:
+        resource_name = "wind_ms" if tech == "wind" else "rsds"
+        night = None
+        if tech == "solar":
+            if lat is None or lon is None:
+                raise ValueError("solar 低资源计算需要场站 lat/lon")
+            night = (solar_elevation(lat, lon, time) <= 0).T
+        out["low_resource"] = low_resource_signal(
+            weather[resource_name], time, base_mask=base_mask,
+            night=night, window_steps=window_steps,
+        )
+    return out
 
 
 # ============================================================================
-# 2) 低资源 low_resource (P5) —— 需要资源时序 + 气候态基线
+# 2) 低资源 low_resource (P5) —— 使用 BCSD 资源时序 + 气候态基线
 #    口径: 24h 居中滚动资源 − clim288(月×时, 基线期) 的距平 <= 每站 P5。
 #          光伏夜间(太阳高度角<=0)强制为 0; 不完整 24h 窗口 -> 无事件。
 # ============================================================================
 
+def roll_centered(resource: np.ndarray, window_steps: int) -> np.ndarray:
+    """按时间步计算居中滚动均值，窗口不完整处为 NaN。"""
+    import pandas as pd
+    if int(window_steps) < 1:
+        raise ValueError("window_steps must be positive")
+    return (pd.DataFrame(resource).rolling(
+        int(window_steps), center=True, min_periods=int(window_steps)
+    ).mean().to_numpy().astype(np.float32))
+
+
 def roll24_centered(resource: np.ndarray, half_back: int = 11, half_fwd: int = 12) -> np.ndarray:
-    """24h 居中滚动均值 (T,K)。窗口不完整(NaN)的时刻 -> NaN。"""
+    """24h 居中滚动均值 (T,K)，仅适用于调用方已按时间步换算的窗口。"""
     T, K = resource.shape
     out = np.full((T, K), np.nan, np.float32)
     cs = np.cumsum(np.where(np.isfinite(resource), resource, 0.0), axis=0)
@@ -111,7 +133,7 @@ def roll24_centered(resource: np.ndarray, half_back: int = 11, half_fwd: int = 1
         s = cs[b - 1] - (cs[a - 1] if a > 0 else 0.0)
         n = cn[b - 1] - (cn[a - 1] if a > 0 else 0)
         win = b - a
-        full = n == win                      # 窗口内无缺测
+        full = n == win
         out[t] = np.where(full, s / np.maximum(n, 1), np.nan)
     return out
 
@@ -133,7 +155,8 @@ def clim288(roll: np.ndarray, time, base_mask=None) -> np.ndarray:
 
 def low_resource_signal(resource: np.ndarray, time, pct: float = 5.0,
                         base_mask=None, night=None,
-                        clim_tbl=None, thr=None):
+                        clim_tbl=None, thr=None, window_steps=None,
+                        mark_next_step=True):
     """低资源 P5 信号 (T,K) bool。
     resource : 资源时序 (风: 10m 风速; 光: 辐照 rsds) (T,K)
     time     : DatetimeIndex (T,)
@@ -144,7 +167,10 @@ def low_resource_signal(resource: np.ndarray, time, pct: float = 5.0,
     返回: bool (T,K)。不完整 24h 窗口 / NaN -> False。"""
     import pandas as pd
     t = pd.DatetimeIndex(time)
-    roll = roll24_centered(resource)
+    roll = roll24_centered(resource) if window_steps is None else roll_centered(
+        resource, half_back=max(int(window_steps) // 2 - 1, 0),
+        half_fwd=int(window_steps) // 2,
+    )
     if clim_tbl is None:
         clim_tbl = clim288(roll, t, base_mask)
     base = clim_tbl[t.month.to_numpy() - 1, t.hour.to_numpy()]   # (T,K)
@@ -153,6 +179,10 @@ def low_resource_signal(resource: np.ndarray, time, pct: float = 5.0,
         ab = anom if base_mask is None else anom[np.asarray(base_mask, bool)]
         thr = np.nanpercentile(np.where(np.isfinite(ab), ab, np.nan), pct, axis=0)  # (K,)
     sig = (anom <= thr[None, :]) & np.isfinite(anom)
+    if mark_next_step:
+        sig_next = sig.copy()
+        sig_next[1:] |= sig[:-1]
+        sig = sig_next
     if night is not None:
         sig = sig & (~np.asarray(night, bool))
     return sig.astype(bool)

@@ -15,7 +15,6 @@ from grid_extreme_signals import cf_low_resource
 from scripts import precompute_low_resource_thresholds as full_precompute
 from scripts import precompute_station_low_resource_thresholds as sparse_precompute
 from scripts.hpc_step1_common import BASELINE_YEARS, SCENARIOS, atomic_path, decode_attrs
-from tools.logging_utils import setup_entry_logging
 
 logger = logging.getLogger("step1_split_E3")
 
@@ -249,8 +248,7 @@ def run(args: argparse.Namespace) -> list[Path]:
 
 
 def main() -> None:
-    setup_entry_logging("step1_split_E3_thresholds_from_union_cache")
-    run(build_parser().parse_args())
+    raise SystemExit("step1 CF 阈值预计算 pipeline 已废弃，请运行 step2_complete_extreme_events.py。")
 
 
 if __name__ == "__main__":

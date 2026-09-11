@@ -209,7 +209,7 @@ def classify_unit(
         if state == "COMPLETED":
             if output_exists:
                 return "SUCCEEDED", "COMPLETED + nonempty output"
-            if stage == "E2" and not has_stations:
+            if stage in {"E2", "STEP2"} and not has_stations:
                 return "SKIPPED_NO_STATIONS", "COMPLETED + no stations; no output expected"
             return "INCOMPLETE_OUTPUT", "COMPLETED but output missing/empty"
         return "UNKNOWN", state
@@ -217,7 +217,7 @@ def classify_unit(
         if previous.get("classification") in {"SUCCEEDED", "SUCCEEDED_RECORDED"} and output_exists:
             return "SUCCEEDED_RECORDED", "local snapshot + nonempty output"
         if (
-            stage == "E2"
+            stage in {"E2", "STEP2"}
             and not has_stations
             and previous.get("classification") == "SKIPPED_NO_STATIONS"
         ):

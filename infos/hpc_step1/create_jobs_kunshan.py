@@ -268,11 +268,10 @@ def run_e3_parallel(args: argparse.Namespace) -> Path:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    if args.e3_parallel:
-        run_e3_parallel(args)
-    else:
-        run(args)
+    raise SystemExit(
+        "step1 CF 阈值作业已废弃；请使用 infos/hpc_step2/create_step2_jobs.py "
+        "生成统一场站极端事件作业。"
+    )
 
 
 if __name__ == "__main__":

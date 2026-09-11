@@ -1,4 +1,7 @@
-# SCNet step2 E2 并行运行目标
+# 历史文档：step2 E2
+
+本文件描述的 CF 低资源补写 pipeline 已被 `../hpc_step2/goal.md` 替代。新生产任务不再运行
+E2，也不再读取 CF 或 ERA5Land 低资源阈值文件。
 
 ## 1. 目标与完成条件
 

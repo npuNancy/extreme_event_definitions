@@ -1,4 +1,7 @@
-# SCNet step2 E1 并行运行目标
+# 历史文档：step2 E1
+
+本文件描述的 E1-only pipeline 已被 `../hpc_step2/goal.md` 替代。新生产任务请使用统一
+`infos/hpc_step2/create_step2_jobs.py`，不要再按本文件生成只包含普通事件的作业。
 
 ## 1. 目标与完成条件
 

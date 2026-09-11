@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""步骤 1：预计算 ERA5Land 2015-2024 SSP 场站稀疏低资源阈值。
+"""历史兼容模块：旧的 ERA5Land CF 低资源阈值入口。
 
 这是两阶段和三阶段流程共用的第一步：
 
@@ -20,9 +20,8 @@ python step1_low_resource_thresholds.py --stations_csv data/stations/stations_SS
 python step1_low_resource_thresholds.py --stations_csv data/stations/stations_SSP5-6.0.csv  --tech solar --baseline_years 2015-2024
 """
 
-from scripts.precompute_station_low_resource_thresholds import main
-from tools.logging_utils import setup_entry_logging
-
 if __name__ == "__main__":
-    setup_entry_logging("step1_low_resource_thresholds")
-    main()
+    raise SystemExit(
+        "step1_low_resource_thresholds.py 已废弃；低资源事件现在直接使用 BCSD 风速/辐照，"
+        "请运行 step2_complete_extreme_events.py。"
+    )

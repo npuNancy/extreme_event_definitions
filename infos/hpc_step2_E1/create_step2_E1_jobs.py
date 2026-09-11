@@ -239,7 +239,9 @@ def run(args: argparse.Namespace) -> Path:
 
 
 def main() -> None:
-    run(build_parser().parse_args())
+    raise SystemExit(
+        "旧 E1 作业生成器已废弃；请使用 infos/hpc_step2/create_step2_jobs.py。"
+    )
 
 
 if __name__ == "__main__":

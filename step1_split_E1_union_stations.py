@@ -21,7 +21,6 @@ from scripts.hpc_step1_common import (
     write_json_atomic,
 )
 from scripts.precompute_station_low_resource_thresholds import _prepare_stations
-from tools.logging_utils import setup_entry_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,8 +124,7 @@ def run(args: argparse.Namespace) -> Path:
 
 
 def main() -> None:
-    setup_entry_logging("step1_split_E1_union_stations")
-    run(build_parser().parse_args())
+    raise SystemExit("step1 CF 阈值预计算 pipeline 已废弃，请运行 step2_complete_extreme_events.py。")
 
 
 if __name__ == "__main__":

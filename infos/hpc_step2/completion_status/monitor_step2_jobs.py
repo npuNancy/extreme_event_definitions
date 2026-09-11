@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""本地监控并补充提交 step2 E2 作业。"""
+"""统一 step2 本地监控并补充提交作业。"""
 from __future__ import annotations
 
 import sys
@@ -11,13 +11,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from infos.hpc_step2_monitor_common import build_parser, run_monitor  # noqa: E402
 
-STATE_DIR = _PROJECT_ROOT / "infos/hpc_step2_E2/completion_status"
+STATE_DIR = _PROJECT_ROOT / "infos/hpc_step2/completion_status"
 
 
 def main() -> None:
-    raise SystemExit(
-        "旧 E2 监控器已废弃；请使用 infos/hpc_step2/completion_status/monitor_step2_jobs.py。"
-    )
+    run_monitor("STEP2", STATE_DIR, build_parser("STEP2").parse_args())
 
 
 if __name__ == "__main__":

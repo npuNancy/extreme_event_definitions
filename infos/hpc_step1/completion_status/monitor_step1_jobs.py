@@ -192,6 +192,9 @@ def _append_usage(server: str, history_start: str, records: list[dict[str, str]]
 
 
 def monitor_server(server: str, history_start: str, snapshot: dict) -> None:
+    raise RuntimeError(
+        "step1 CF 阈值监控已废弃；请使用 infos/hpc_step2/completion_status/monitor_step2_jobs.py"
+    )
     config = SERVER_CONFIG[server]
     tech = config["tech"]
     project = config["project_dir"]

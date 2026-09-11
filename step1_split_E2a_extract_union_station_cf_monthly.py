@@ -19,7 +19,6 @@ from scripts.hpc_step1_common import (
     create_station_cache,
     require_output_available,
 )
-from tools.logging_utils import setup_entry_logging
 
 logger = logging.getLogger("step1_split_E2a")
 
@@ -180,8 +179,7 @@ def run(args: argparse.Namespace) -> Path:
 
 
 def main() -> None:
-    setup_entry_logging("step1_split_E2a_extract_union_station_cf_monthly")
-    run(build_parser().parse_args())
+    raise SystemExit("step1 CF 阈值预计算 pipeline 已废弃，请运行 step2_complete_extreme_events.py。")
 
 
 if __name__ == "__main__":

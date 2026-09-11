@@ -15,7 +15,9 @@ STATE_DIR = _PROJECT_ROOT / "infos/hpc_step2_E1/completion_status"
 
 
 def main() -> None:
-    run_monitor("E1", STATE_DIR, build_parser("E1").parse_args())
+    raise SystemExit(
+        "旧 E1 监控器已废弃；请使用 infos/hpc_step2/completion_status/monitor_step2_jobs.py。"
+    )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # 超算加速 step1 低资源事件阈值计算方案
 
+> 历史方案：已被 `BCSD低资源事件与其余极端事件合并实施方案.md` 替代。不得用于新生产。
+
 ## 1. 文档状态
 
 - 工作分支：`hpc-step1-low-resource-acceleration`

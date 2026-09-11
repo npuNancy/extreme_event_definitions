@@ -16,6 +16,40 @@ PCT = 5.0                       # 距平百分位 (P5)
 HALF_BACK, HALF_FWD = 12, 12    # 小时级数据的居中 24h 窗口
 
 
+def window_steps_for_hours(timestep_hours: float, window_hours: float = 24.0) -> int:
+    """将物理时长转换为整数时间步数。"""
+    timestep_hours = float(timestep_hours)
+    if not np.isfinite(timestep_hours) or timestep_hours <= 0:
+        raise ValueError(f"timestep_hours must be positive, got {timestep_hours!r}")
+    steps = float(window_hours) / timestep_hours
+    rounded = int(round(steps))
+    if rounded < 1 or not np.isclose(steps, rounded, rtol=0.0, atol=1e-8):
+        raise ValueError(
+            f"{float(window_hours):g}h window is not an integer number of "
+            f"{timestep_hours:g}h steps"
+        )
+    return rounded
+
+
+def validate_regular_timestep(time, expected_hours: float | None = None) -> float:
+    """校验时间轴严格递增且步长均匀，返回小时步长。"""
+    t = pd.DatetimeIndex(time)
+    if len(t) < 2:
+        raise ValueError("低资源计算至少需要两个时间点")
+    time_ns = t.to_numpy(dtype="datetime64[ns]").astype("int64")
+    diffs = np.diff(time_ns).astype(np.float64) / 3.6e12
+    if np.any(diffs <= 0) or not np.allclose(diffs, diffs[0], rtol=0.0, atol=1e-8):
+        raise ValueError("时间轴必须严格递增且步长均匀")
+    timestep_hours = float(diffs[0])
+    if expected_hours is not None and not np.isclose(
+        timestep_hours, float(expected_hours), rtol=0.0, atol=1e-8
+    ):
+        raise ValueError(
+            f"时间轴步长为 {timestep_hours:g}h，预期 {float(expected_hours):g}h"
+        )
+    return timestep_hours
+
+
 def roll_centered(a, window_steps=24):
     """居中滚动均值 (T,K); 窗口不完整 -> NaN。"""
     win = int(window_steps)

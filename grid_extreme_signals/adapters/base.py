@@ -19,7 +19,8 @@ class WeatherBundle:
     """已标准化、可用于事件识别的气象数据。
 
     ``dataset`` 包含源数据原生空间网格上的统一气象变量（temp_C、wind_ms、precip_mmh、
-    rsds、rh_pct、dust_aod）。只包含给定数据源/技术类型实际存在的变量。
+    rsds、rh_pct、dust_aod）。其中 wind 的 ``wind_ms`` 和 solar 的 ``rsds`` 同时是
+    BCSD 低资源事件的资源输入。只包含给定数据源/技术类型实际存在的变量。
 
     Attributes
     ----------

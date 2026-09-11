@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""步骤 2（完整两阶段流程）：计算未来场站极端事件，包含 low_resource。
+"""统一步骤 2：基于 Regional BCSD 一次生成全部场站极端事件。
 
-目标 SSP 的未来 CF 文件已经准备好时，在 ``step1_low_resource_thresholds.py`` 后运行。
-该入口调用场站直接流程，并保留默认启用的低资源事件计算。
+普通事件和低资源事件均直接使用同一批 BCSD 场站气象数据；低资源事件的风速/辐照
+气候态与 P5 阈值在当前任务的 2015-2024 基线内计算，不依赖 CF 或独立阈值文件。
 """
 from scripts.station_signals_direct import main
 from tools.logging_utils import setup_entry_logging

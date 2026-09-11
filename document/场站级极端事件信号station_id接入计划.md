@@ -1,5 +1,8 @@
 # 场站级极端事件信号 `station_id` 接入计划
 
+> 本文记录旧 E1/E2 产物的 station_id 过渡方案。当前生产已合并为统一 step2，
+> 由 `write_station_signals` 一次写出 station_id 和全部事件；不再运行 E2 CF 补写。
+
 ## 1. 结论
 
 `station_id` 应由 `extreme_event_definitions` 在生成场站级极端事件信号时写入，
