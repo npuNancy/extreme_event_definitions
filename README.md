@@ -20,4 +20,4 @@ python scripts/station_signals_patchify.py \
 
 事件定义位于 `events/`，单位转换位于 `grid_extreme_signals/unit_conversion.py`，
 场站匹配和 station_id 契约位于 `grid_extreme_signals/station_match.py`。旧的
-多阶段阈值、区域适配器和网格输出入口已移除。
+多阶段阈值、旧适配器和网格输出入口已移除。
