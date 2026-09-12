@@ -94,9 +94,7 @@ def pr_to_mmh(
       - ``mm h-1``                    → 不变
       - ``mm``（每个时间步累计量）      → ÷timestep_hours（需要 *timestep_hours*）
 
-    .. warning::
-       不要对 ERA5-Land ``tp`` 直接调用本函数；该变量需要先解累计
-       （由 era5land_raw 适配器处理）。
+    输入必须是逐时间步的降水率或明确给出时间步长度的累计量。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "").replace("²", "2")
@@ -140,9 +138,7 @@ def rsds_to_wm2(
       - ``kW m-2``  → ×1000
       - ``J m-2``   → ÷timestep_seconds（需要 *timestep_seconds*）
 
-    .. warning::
-       不要对 ERA5-Land ``ssrd`` 直接调用本函数；该变量需要先解累计
-       （由 era5land_raw 适配器处理）。
+    输入必须是逐时间步的辐照度或明确给出时间步长度的能量累计量。
     """
     x = np.asarray(arr, dtype=np.float32)
     units_l = (units or "").lower().replace(" ", "").replace("²", "2")

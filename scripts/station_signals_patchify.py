@@ -67,7 +67,7 @@ def _pseudo(times):
 
 def run(a):
     # Read patch bbox from an optional manifest; explicit bbox is required so the
-    # script never silently assigns stations by country/region.
+    # The manifest is the only spatial ownership source.
     manifest=json.loads(Path(a.patch_manifest).read_text())
     bbox=manifest["patches"][a.patch]["core_bbox_360"]
     stations=_stations(a.stations_csv,a.tech,bbox)
@@ -112,7 +112,7 @@ def run(a):
         valid=match.valid[None,:]; act=years[:,None]>=stations.activation_year.to_numpy(int)[None,:]
         masks={f"signal_{k}":(np.asarray(v,bool)&valid&act).astype(np.int8) for k,v in masks.items()}
         tmp=out.with_suffix(out.suffix+f".partial.{os.getpid()}")
-        sm.write_station_signals(tmp,masks,times,match,a.tech,source="global_bcsd_patch",model=a.model,region=a.patch,scenario=a.scenario,source_csv=os.path.basename(a.stations_csv),pipeline="patchify",supported=sorted(masks),skipped=[],skipped_reasons={},max_dist=a.max_distance_deg,activation_mask_on=True,attrs_extra={"patch_manifest":str(Path(a.patch_manifest).resolve()),"low_resource_cache":"clim288+P5 in job","bcsd_files":json.dumps({k:str(v) for k,v in files.items()})})
+        sm.write_station_signals(tmp,masks,times,match,a.tech,source="global_bcsd_patch",model=a.model,patch_id=a.patch,scenario=a.scenario,source_csv=os.path.basename(a.stations_csv),pipeline="patchify",supported=sorted(masks),skipped=[],skipped_reasons={},max_dist=a.max_distance_deg,activation_mask_on=True,attrs_extra={"patch_manifest":str(Path(a.patch_manifest).resolve()),"low_resource_cache":"clim288+P5 in job","bcsd_files":json.dumps({k:str(v) for k,v in files.items()})})
         os.replace(tmp,out); Path(str(out)+".json").write_text(json.dumps({"model":a.model,"scenario":a.scenario,"patch_id":a.patch,"tech":a.tech,"station_count":len(stations),"baseline":"2015-2024","output":str(out)},indent=2)+"\n")
     finally:
         for ds in opened.values(): ds.close()

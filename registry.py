@@ -15,7 +15,6 @@ from events import (wind_icing, wind_high_temp, wind_hot_humid, wind_high_wind,
                     solar_freezing_rain, solar_dust, solar_rainstorm,
                     solar_high_humidity, solar_cold_highwind, solar_icing,
                     wind_low_resource, solar_low_resource)
-from tools.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +112,3 @@ def list_all():
     for tech, m in LOWRES.items():
         logger.info("  [%s] %-6s %-14s : %s", tech, m.LABEL, m.NAME, m.EXPR)
 
-
-if __name__ == "__main__":
-    setup_logging("registry")
-    list_all()
