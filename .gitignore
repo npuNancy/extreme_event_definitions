@@ -1,4 +1,6 @@
 # Patchify outputs and local runtime
+data/*
+ref_code/*
 outputs_patchify/
 scnet_runtime/
 outputs/
@@ -12,4 +14,3 @@ __pycache__/
 .venv/
 .vscode/
 .claude/
-
