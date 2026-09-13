@@ -65,6 +65,42 @@ def _pseudo(times):
         out.append(pd.Timestamp(2000,int(stamp.month),int(stamp.day),int(getattr(stamp,"hour",0)),int(getattr(stamp,"minute",0)),int(getattr(stamp,"second",0))))
     return pd.DatetimeIndex(out)
 
+class _SignalWriter:
+    """Streams station signal columns to netCDF; mirrors the dataset layout of
+    station_match.write_station_signals without materializing (T, all stations)."""
+    def __init__(self,path,times,stations,match,a,files):
+        import netCDF4
+        self.path=path
+        self.ds=netCDF4.Dataset(path,"w",format="NETCDF4")
+        self.ds.createDimension("time",len(times)); self.ds.createDimension("station",len(stations))
+        t=self.ds.createVariable("time","f8",("time",)); t.units="hours since 1970-01-01"; t.calendar="standard"
+        t[:]=pd.DatetimeIndex(times).astype("datetime64[ns]").astype("int64")/3600e9
+        s=self.ds.createVariable("station","i4",("station",)); s[:]=np.arange(len(stations),dtype=np.int32)
+        ids=sm.station_ids(a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
+        sm.validate_station_ids(ids,a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
+        for name,values,dtype in (("station_id",ids,"S1"),("lon",stations.lon.to_numpy(np.float32),"f4"),
+                ("lat",stations.lat.to_numpy(np.float32),"f4"),("capacity_gw",stations.capacity_gw.to_numpy(np.float32),"f4"),
+                ("activation_year",stations.activation_year.to_numpy(np.int16),"i2"),
+                ("match_dist_deg",match.dist_deg.astype(np.float32),"f4")):
+            v=self.ds.createVariable(name,dtype,("station",)); v[:]=values
+        self.ds.setncatts({"source":"global_bcsd_patch","model":a.model,"patch_id":a.patch,"scenario":a.scenario,
+            "tech":a.tech,"source_csv":os.path.basename(a.stations_csv),"pipeline":"patchify",
+            "grid_resolution":"0.1deg","match_method":match.method,"max_match_dist_deg":str(a.max_distance_deg),
+            "activation_mask":"on","skipped_events":"","patch_manifest":str(Path(a.patch_manifest).resolve()),
+            "low_resource_cache":"clim288+P5 in job","bcsd_files":json.dumps({k:str(v) for k,v in files.items()})})
+        self._vars={}; self._events=set()
+    def write(self,masks,k0):
+        for name,values in masks.items():
+            if name not in self._vars:
+                v=self.ds.createVariable(name,"i1",("time","station"),zlib=True,complevel=4)
+                v.flag_values="0, 1"; v.flag_meanings="false true"
+                self._vars[name]=v
+                self._events.add(name)
+                self.ds.setncattr("supported_events",",".join(sorted(self._events)))
+            self._vars[name][:,k0:k0+values.shape[1]]=values
+    def close(self):
+        self.ds.close()
+
 def run(a):
     # Read patch bbox from an optional manifest; explicit bbox is required so the
     # The manifest is the only spatial ownership source.
@@ -85,44 +121,55 @@ def run(a):
         years_raw=np.asarray([int(_year(t)) for t in raw_times]); selected=np.flatnonzero((years_raw>=y0)&(years_raw<=y1))
         if selected.size==0: raise ValueError(f"no time points in --years {a.years}")
         ref=ref.isel({tn:selected}); times=ref[tn].values
-        match=sm.match_regular_weighted(ref[ln].values,ref[on].values,stations,method=a.spatial_method,max_dist=a.max_distance_deg)
-        # Station gather only touches the grid rows/columns in idx0/idx1. Crop
-        # each variable to those axes before materializing `.values`; patch
-        # files reach tens of GB and a full-grid array exhausts node memory.
-        used_lat=np.unique(match.idx0); used_lon=np.unique(match.idx1)
-        lat_pos=np.full(match.idx0.max()+1,-1,dtype=np.int64); lat_pos[used_lat]=np.arange(len(used_lat))
-        lon_pos=np.full(match.idx1.max()+1,-1,dtype=np.int64); lon_pos[used_lon]=np.arange(len(used_lon))
-        match=sm.StationSpatialWeights(match.stations,lat_pos[match.idx0],lon_pos[match.idx1],
-            match.weight,match.dist_deg,match.valid,grid_kind=match.grid_kind,method=match.method)
-        lat_sel={ln:used_lat}; lon_sel={on:used_lon}
-        weather={}
-        for v,ds in opened.items():
-            da=_v(ds,v); dt=_coord(ds,("time","valid_time"))
-            if not np.array_equal(ds[dt].values,times): da=da.interp({dt:ref[tn]})
-            da=da.isel(**lat_sel,**lon_sel)
-            arr=np.asarray(da.transpose(dt,ln,on).values,dtype=np.float32)
-            arr=sm.gather_to_stations_weighted(arr,match)
-            units=da.attrs.get("units") or {"tas":"K","uas":"m/s","vas":"m/s","hurs":"%","pr":"kg m-2 s-1","rsds":"W m-2"}[v]
-            if v in ("uas","vas"): arr=wind_to_ms(arr,units); 
-            elif v=="tas": arr=tas_to_celsius(arr,units)
-            elif v=="hurs": arr=hurs_to_pct(arr,units)
-            elif v=="pr": arr=pr_to_mmh(arr,units)
-            elif v=="rsds": arr=rsds_to_wm2(arr,units)
-            weather[{"tas":"temp_C","uas":"wind_u_ms","vas":"wind_v_ms","hurs":"rh_pct","pr":"precip_mmh","rsds":"rsds"}[v]]=arr
-        weather["wind_ms"]=np.hypot(weather.pop("wind_u_ms"),weather.pop("wind_v_ms")).astype(np.float32)
-        masks=registry.simple_signals(a.tech,weather,skip_missing=False)
+        full_match=sm.match_regular_weighted(ref[ln].values,ref[on].values,stations,method=a.spatial_method,max_dist=a.max_distance_deg)
         idx=_pseudo(times); years=np.array([_year(t) for t in times]); base=(years>=2015)&(years<=2024)
         if base.sum()==0: raise ValueError("2015-2024 baseline is absent")
-        resource=weather[registry.LOWRES_RESOURCE[a.tech]]
-        steps=common.window_steps_for_hours(3.0); roll=common.roll_centered(resource,steps); clim=common.clim288(roll,idx,base); anom=roll-clim[idx.month.to_numpy()-1,idx.hour.to_numpy()]; thr=np.nanpercentile(np.where(np.isfinite(anom[base]),anom[base],np.nan),5,axis=0)
-        low_kwargs=dict(base_mask=base,clim_tbl=clim,thr=thr,window_steps=steps)
-        if a.tech=="solar": low_kwargs.update(lat=stations.lat.to_numpy(float),lon=stations.lon.to_numpy(float))
-        low=registry.low_resource_signal(a.tech,{registry.LOWRES_RESOURCE[a.tech]:resource},idx,**low_kwargs)
-        masks["low_resource"]=low
-        valid=match.valid[None,:]; act=years[:,None]>=stations.activation_year.to_numpy(int)[None,:]
-        masks={f"signal_{k}":(np.asarray(v,bool)&valid&act).astype(np.int8) for k,v in masks.items()}
+        steps=common.window_steps_for_hours(3.0)
+        # Large patches hold tens of thousands of stations; the per-variable
+        # station series alone is (T, S) float32 = tens of GB. All signals and
+        # the low-resource climatology are station-independent, so stream in
+        # station blocks: gather the block's grid rows/cols, run the identical
+        # per-block pipeline, write netCDF columns straight to disk.
+        nt=len(times); ns=len(stations)
+        blk=max(256,int(1.0e9//max(1,nt*4*6)))
+        blocks=[(k0,min(ns,k0+blk)) for k0 in range(0,ns,blk)]
         tmp=out.with_suffix(out.suffix+f".partial.{os.getpid()}")
-        sm.write_station_signals(tmp,masks,times,match,a.tech,source="global_bcsd_patch",model=a.model,patch_id=a.patch,scenario=a.scenario,source_csv=os.path.basename(a.stations_csv),pipeline="patchify",supported=sorted(masks),skipped=[],skipped_reasons={},max_dist=a.max_distance_deg,activation_mask_on=True,attrs_extra={"patch_manifest":str(Path(a.patch_manifest).resolve()),"low_resource_cache":"clim288+P5 in job","bcsd_files":json.dumps({k:str(v) for k,v in files.items()})})
+        writer=_SignalWriter(tmp,times,stations,full_match,a,files)
+        try:
+            for k0,k1 in blocks:
+                sub=stations.iloc[k0:k1].reset_index(drop=True)
+                m=sm.match_regular_weighted(ref[ln].values,ref[on].values,sub,method=a.spatial_method,max_dist=a.max_distance_deg)
+                used_lat=np.unique(m.idx0); used_lon=np.unique(m.idx1)
+                lat_pos=np.full(m.idx0.max()+1,-1,dtype=np.int64); lat_pos[used_lat]=np.arange(len(used_lat))
+                lon_pos=np.full(m.idx1.max()+1,-1,dtype=np.int64); lon_pos[used_lon]=np.arange(len(used_lon))
+                m=sm.StationSpatialWeights(m.stations,lat_pos[m.idx0],lon_pos[m.idx1],m.weight,m.dist_deg,m.valid,grid_kind=m.grid_kind,method=m.method)
+                weather={}
+                for v,ds in opened.items():
+                    da=_v(ds,v); dt=_coord(ds,("time","valid_time"))
+                    if not np.array_equal(ds[dt].values,times): da=da.interp({dt:ref[tn]})
+                    da=da.isel(**{ln:used_lat,on:used_lon})
+                    arr=np.asarray(da.transpose(dt,ln,on).values,dtype=np.float32)
+                    arr=sm.gather_to_stations_weighted(arr,m)
+                    units=da.attrs.get("units") or {"tas":"K","uas":"m/s","vas":"m/s","hurs":"%","pr":"kg m-2 s-1","rsds":"W m-2"}[v]
+                    if v in ("uas","vas"): arr=wind_to_ms(arr,units)
+                    elif v=="tas": arr=tas_to_celsius(arr,units)
+                    elif v=="hurs": arr=hurs_to_pct(arr,units)
+                    elif v=="pr": arr=pr_to_mmh(arr,units)
+                    elif v=="rsds": arr=rsds_to_wm2(arr,units)
+                    weather[{"tas":"temp_C","uas":"wind_u_ms","vas":"wind_v_ms","hurs":"rh_pct","pr":"precip_mmh","rsds":"rsds"}[v]]=arr
+                weather["wind_ms"]=np.hypot(weather.pop("wind_u_ms"),weather.pop("wind_v_ms")).astype(np.float32)
+                masks=registry.simple_signals(a.tech,weather,skip_missing=False)
+                resource=weather[registry.LOWRES_RESOURCE[a.tech]]
+                roll=common.roll_centered(resource,steps); clim=common.clim288(roll,idx,base); anom=roll-clim[idx.month.to_numpy()-1,idx.hour.to_numpy()]; thr=np.nanpercentile(np.where(np.isfinite(anom[base]),anom[base],np.nan),5,axis=0)
+                low_kwargs=dict(base_mask=base,clim_tbl=clim,thr=thr,window_steps=steps)
+                if a.tech=="solar": low_kwargs.update(lat=sub.lat.to_numpy(float),lon=sub.lon.to_numpy(float))
+                low=registry.low_resource_signal(a.tech,{registry.LOWRES_RESOURCE[a.tech]:resource},idx,**low_kwargs)
+                masks["low_resource"]=low
+                valid=m.valid[None,:]; act=years[:,None]>=sub.activation_year.to_numpy(int)[None,:]
+                masks={f"signal_{k}":(np.asarray(v,bool)&valid&act).astype(np.int8) for k,v in masks.items()}
+                writer.write(masks,k0)
+        finally:
+            writer.close()
         os.replace(tmp,out); Path(str(out)+".json").write_text(json.dumps({"model":a.model,"scenario":a.scenario,"patch_id":a.patch,"tech":a.tech,"station_count":len(stations),"baseline":"2015-2024","output":str(out)},indent=2)+"\n")
     finally:
         for ds in opened.values(): ds.close()
