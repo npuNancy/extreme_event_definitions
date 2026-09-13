@@ -16,7 +16,9 @@ def main(argv=None):
   if a.time: lines.append(f"#SBATCH --time={a.time}")
   cmd=["python",str(Path(a.project_dir)/"scripts/station_signals_patchify.py"),"--bcsd-root",a.bcsd_root,"--model",model,"--scenario",sc,"--patch",patch,"--patch-manifest",a.patch_manifest,"--stations-csv",a.stations_csv,"--tech",tech,"--years",a.years,"--output-root",a.output_root]
   if a.overwrite: cmd.append("--overwrite")
-  lines += ["set -euo pipefail","source /work/home/acbpgywfpz/miniconda3/bin/activate climate",f"mkdir -p {q(a.logs_dir)} {q(a.output_root)}",f"cd {q(a.project_dir)}"," ".join(q(x) for x in cmd)]
+  # Activate first: SCNet's activation hooks may reference optional unset
+  # variables, which is incompatible with nounset during shell setup.
+  lines += ["source /work/home/acbpgywfpz/miniconda3/bin/activate climate","set -euo pipefail",f"mkdir -p {q(a.logs_dir)} {q(a.output_root)}",f"cd {q(a.project_dir)}"," ".join(q(x) for x in cmd)]
   if a.dry_run: rows.append({"unit_id":jid,"model":model,"scenario":sc,"patch":patch,"tech":tech}); continue
   path=out/(jid+".sh");
   if path.exists() and not a.overwrite: raise FileExistsError(path)
