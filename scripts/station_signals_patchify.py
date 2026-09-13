@@ -86,10 +86,20 @@ def run(a):
         if selected.size==0: raise ValueError(f"no time points in --years {a.years}")
         ref=ref.isel({tn:selected}); times=ref[tn].values
         match=sm.match_regular_weighted(ref[ln].values,ref[on].values,stations,method=a.spatial_method,max_dist=a.max_distance_deg)
+        # Station gather only touches the grid rows/columns in idx0/idx1. Crop
+        # each variable to those axes before materializing `.values`; patch
+        # files reach tens of GB and a full-grid array exhausts node memory.
+        used_lat=np.unique(match.idx0); used_lon=np.unique(match.idx1)
+        lat_pos=np.full(match.idx0.max()+1,-1,dtype=np.int64); lat_pos[used_lat]=np.arange(len(used_lat))
+        lon_pos=np.full(match.idx1.max()+1,-1,dtype=np.int64); lon_pos[used_lon]=np.arange(len(used_lon))
+        match=sm.StationSpatialWeights(match.stations,lat_pos[match.idx0],lon_pos[match.idx1],
+            match.weight,match.dist_deg,match.valid,grid_kind=match.grid_kind,method=match.method)
+        lat_sel={ln:used_lat}; lon_sel={on:used_lon}
         weather={}
         for v,ds in opened.items():
             da=_v(ds,v); dt=_coord(ds,("time","valid_time"))
             if not np.array_equal(ds[dt].values,times): da=da.interp({dt:ref[tn]})
+            da=da.isel(**lat_sel,**lon_sel)
             arr=np.asarray(da.transpose(dt,ln,on).values,dtype=np.float32)
             arr=sm.gather_to_stations_weighted(arr,match)
             units=da.attrs.get("units") or {"tas":"K","uas":"m/s","vas":"m/s","hurs":"%","pr":"kg m-2 s-1","rsds":"W m-2"}[v]
