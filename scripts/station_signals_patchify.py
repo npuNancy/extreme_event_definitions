@@ -73,8 +73,15 @@ class _SignalWriter:
         self.path=path
         self.ds=netCDF4.Dataset(path,"w",format="NETCDF4")
         self.ds.createDimension("time",len(times)); self.ds.createDimension("station",len(stations))
-        t=self.ds.createVariable("time","f8",("time",)); t.units="hours since 1970-01-01"; t.calendar="standard"
-        t[:]=pd.DatetimeIndex(times).astype("datetime64[ns]").astype("int64")/3600e9
+        t=self.ds.createVariable("time","f8",("time",))
+        from xarray.coding.times import encode_cf_datetime
+        raw=np.asarray(times)
+        if np.issubdtype(raw.dtype,np.datetime64):
+            encoded,units,calendar=encode_cf_datetime(raw.astype("datetime64[ns]"),"hours since 1970-01-01")
+        else:
+            encoded,units,calendar=encode_cf_datetime(list(times),"hours since 1970-01-01")
+        t.units=units; t.calendar=calendar
+        t[:]=encoded
         s=self.ds.createVariable("station","i4",("station",)); s[:]=np.arange(len(stations),dtype=np.int32)
         ids=sm.station_ids(a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
         sm.validate_station_ids(ids,a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
