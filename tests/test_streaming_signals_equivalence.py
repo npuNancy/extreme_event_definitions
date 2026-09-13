@@ -53,19 +53,19 @@ def build(root: Path):
     return lat, lon, times
 
 
-def reference(root: Path, tech: str):
+def reference(root: Path, tech: str, stations_csv: Path | None = None):
     import station_signals_patchify as ssp
     from grid_extreme_signals import station_match as sm
     from grid_extreme_signals.unit_conversion import (hurs_to_pct, pr_to_mmh,
                                                       rsds_to_wm2, tas_to_celsius, wind_to_ms)
     import registry
     from tools import common
-    stations = ssp._stations(str(root / "stations.csv"), tech,
+    stations = ssp._stations(str(stations_csv or root / "stations.csv"), tech,
                              json.loads((root / "patch_manifest.json").read_text())["patches"]["P1"]["core_bbox_360"])
     files = {v: root / "bcsd" / "outputs" / "M" / "ssp126" / v / f"{v}_M_ssp126_P1.nc" for v in ssp.NEEDED[tech]}
     opened = {v: xr.open_dataset(p) for v, p in files.items()}
     try:
-        ref = opened["uas"]
+        ref = opened["rsds" if tech == "solar" else "uas"]
         times = ref.time.values
         match = sm.match_regular_weighted(ref.lat.values, ref.lon.values, stations, method="nearest", max_dist=0.15)
         weather = {}
@@ -84,7 +84,7 @@ def reference(root: Path, tech: str):
             weather[{"tas": "temp_C", "uas": "wind_u_ms", "vas": "wind_v_ms",
                      "hurs": "rh_pct", "pr": "precip_mmh", "rsds": "rsds"}[v]] = arr
         weather["wind_ms"] = np.hypot(weather.pop("wind_u_ms"), weather.pop("wind_v_ms")).astype(np.float32)
-        masks = registry.simple_signals(tech, weather, skip_missing=False)
+        masks = registry.simple_signals(tech, weather, skip_missing=True)
         idx = ssp._pseudo(times)
         years = np.array([pd.Timestamp(t).year for t in times])
         base = (years >= 2015) & (years <= 2024)
@@ -107,7 +107,7 @@ def reference(root: Path, tech: str):
 
 
 def test_streaming_matches_reference():
-    for tech in ("wind",):
+    for tech in ("wind","solar"):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             build(root)
@@ -119,9 +119,13 @@ def test_streaming_matches_reference():
             args.years = "2015-2015"; args.output_root = str(out_root)
             args.spatial_method = "nearest"; args.max_distance_deg = 0.15
             import station_signals_patchify as ssp
+            rows = pd.read_csv(root / "stations.csv"); rows["type"] = tech
+            tech_csv = root / f"stations_{tech}.csv"
+            rows.to_csv(tech_csv, index=False)
+            args.stations_csv = str(tech_csv)
             ssp.run(args)
             got = xr.open_dataset(out_root / "M" / "ssp126" / "P1" / f"{tech}.nc")
-            ref = reference(root, tech)
+            ref = reference(root, tech, tech_csv)
             for name, values in ref.items():
                 assert name in got.variables, f"missing {name}"
                 np.testing.assert_array_equal(got[name].values, values, err_msg=name)

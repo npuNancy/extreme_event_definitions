@@ -95,7 +95,7 @@ class _SignalWriter:
             "grid_resolution":"0.1deg","match_method":match.method,"max_match_dist_deg":str(a.max_distance_deg),
             "activation_mask":"on","skipped_events":"","patch_manifest":str(Path(a.patch_manifest).resolve()),
             "low_resource_cache":"clim288+P5 in job","bcsd_files":json.dumps({k:str(v) for k,v in files.items()})})
-        self._vars={}; self._events=set()
+        self._vars={}; self._events=set(); self._skipped=set()
     def write(self,masks,k0):
         for name,values in masks.items():
             if name not in self._vars:
@@ -105,6 +105,10 @@ class _SignalWriter:
                 self._events.add(name)
                 self.ds.setncattr("supported_events",",".join(sorted(self._events)))
             self._vars[name][:,k0:k0+values.shape[1]]=values
+    def note_skipped(self,names,reason):
+        self._skipped.update(names)
+        self.ds.setncattr("skipped_events",",".join(sorted(self._skipped)))
+        self.ds.setncattr("skipped_reasons",json.dumps({n:reason for n in sorted(self._skipped)}))
     def close(self):
         self.ds.close()
 
@@ -183,7 +187,13 @@ def run(a):
                     elif v=="rsds": arr=rsds_to_wm2(arr,units)
                     weather[{"tas":"temp_C","uas":"wind_u_ms","vas":"wind_v_ms","hurs":"rh_pct","pr":"precip_mmh","rsds":"rsds"}[v]]=arr
                 weather["wind_ms"]=np.hypot(weather.pop("wind_u_ms"),weather.pop("wind_v_ms")).astype(np.float32)
-                masks=registry.simple_signals(a.tech,weather,skip_missing=False)
+                # skip_missing=True: solar dust needs observed dust_aod (MERRA-2),
+                # which global BCSD does not carry; such events are skipped and
+                # recorded in skipped_events instead of killing the unit.
+                masks=registry.simple_signals(a.tech,weather,skip_missing=True)
+                supported=set(masks)|set(writer._events)
+                skipped=sorted(set(registry.SIMPLE[a.tech])-supported)
+                if skipped: writer.note_skipped(skipped,reason="input absent from global BCSD")
                 resource=weather[registry.LOWRES_RESOURCE[a.tech]]
                 roll=common.roll_centered(resource,steps); clim=common.clim288(roll,idx,base); anom=roll-clim[idx.month.to_numpy()-1,idx.hour.to_numpy()]; thr=np.nanpercentile(np.where(np.isfinite(anom[base]),anom[base],np.nan),5,axis=0)
                 low_kwargs=dict(base_mask=base,clim_tbl=clim,thr=thr,window_steps=steps)
