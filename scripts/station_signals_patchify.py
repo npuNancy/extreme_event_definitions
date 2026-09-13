@@ -151,13 +151,31 @@ def run(a):
                 lon_pos=np.full(m.idx1.max()+1,-1,dtype=np.int64); lon_pos[used_lon]=np.arange(len(used_lon))
                 m=sm.StationSpatialWeights(m.stations,lat_pos[m.idx0],lon_pos[m.idx1],m.weight,m.dist_deg,m.valid,grid_kind=m.grid_kind,method=m.method)
                 weather={}
+                # Gather the station block in time sub-blocks: a dense block
+                # spans most of the grid, and a one-shot (T, rows, cols)
+                # read would materialize tens of GB per variable. Off-axis
+                # variables interpolate per sub-block padded by one source
+                # step so linear edges keep their neighbours.
+                tb=max(64,min(2048,int(1.5e9//max(1,len(used_lat)*len(used_lon)*4))))
                 for v,ds in opened.items():
                     da=_v(ds,v); dt=_coord(ds,("time","valid_time"))
-                    if not np.array_equal(ds[dt].values,times): da=da.interp({dt:ref[tn]})
+                    off_axis = not np.array_equal(ds[dt].values,times)
+                    src_times=ds[dt].values
                     da=da.isel(**{ln:used_lat,on:used_lon})
-                    arr=np.asarray(da.transpose(dt,ln,on).values,dtype=np.float32)
-                    arr=sm.gather_to_stations_weighted(arr,m)
-                    units=da.attrs.get("units") or {"tas":"K","uas":"m/s","vas":"m/s","hurs":"%","pr":"kg m-2 s-1","rsds":"W m-2"}[v]
+                    station_series=np.empty((nt,k1-k0),dtype=np.float32)
+                    for s0 in range(0,nt,tb):
+                        s1=min(nt,s0+tb)
+                        if off_axis:
+                            pad_lo=1 if s0>0 else 0
+                            pad_hi=1 if s1<len(src_times) else 0
+                            chunk=da.isel(**{dt:slice(s0-pad_lo,s1+pad_hi)})
+                            chunk=chunk.interp(**{dt:times[s0:s1]})
+                        else:
+                            chunk=da.isel(**{dt:slice(s0,s1)})
+                        arr=np.asarray(chunk.transpose(dt,ln,on).values,dtype=np.float32)
+                        station_series[s0:s1]=sm.gather_to_stations_weighted(arr,m)
+                    arr=station_series
+                    units=_v(ds,v).attrs.get("units") or {"tas":"K","uas":"m/s","vas":"m/s","hurs":"%","pr":"kg m-2 s-1","rsds":"W m-2"}[v]
                     if v in ("uas","vas"): arr=wind_to_ms(arr,units)
                     elif v=="tas": arr=tas_to_celsius(arr,units)
                     elif v=="hurs": arr=hurs_to_pct(arr,units)

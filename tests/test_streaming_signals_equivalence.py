@@ -32,8 +32,11 @@ def build(root: Path):
         d = bcsd / v; d.mkdir(parents=True)
         data = np.abs(rng.normal(size=(NT, NY, NX)) * 0.2 + s0).astype(np.float32)
         units = {"tas": "K", "pr": "kg m-2 s-1", "rsds": "W m-2", "hurs": "%"}.get(v, "m/s")
+        # uas carries the reference axis; other stamps offset 90 minutes so
+        # the block-padded interpolation path is exercised.
+        vt = times if v == "uas" else times + pd.Timedelta(minutes=90)
         ds = xr.Dataset({f"{v}_bcsd": (("time", "lat", "lon"), data, {"units": units})},
-                        coords={"time": times, "lat": lat, "lon": lon})
+                        coords={"time": vt, "lat": lat, "lon": lon})
         fn = d / f"{v}_M_ssp126_P1.nc"
         ds.to_netcdf(fn)
         fn.with_suffix(".nc.json").write_text(json.dumps(
@@ -68,6 +71,8 @@ def reference(root: Path, tech: str):
         weather = {}
         for v, ds in opened.items():
             da = ds[f"{v}_bcsd"]
+            if not np.array_equal(da.time.values, times):
+                da = da.interp({"time": times})
             arr = np.asarray(da.transpose("time", "lat", "lon").values, dtype=np.float32)
             arr = sm.gather_to_stations_weighted(arr, match)
             units = da.attrs.get("units") or {"tas": "K", "pr": "kg m-2 s-1", "rsds": "W m-2"}[v]
