@@ -85,7 +85,7 @@ class _SignalWriter:
         s=self.ds.createVariable("station","i4",("station",)); s[:]=np.arange(len(stations),dtype=np.int32)
         ids=sm.station_ids(a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
         sm.validate_station_ids(ids,a.scenario,a.tech,stations.lon.to_numpy(float),stations.lat.to_numpy(float))
-        for name,values,dtype in (("station_id",ids,"S1"),("lon",stations.lon.to_numpy(np.float32),"f4"),
+        for name,values,dtype in (("station_id",ids,str),("lon",stations.lon.to_numpy(np.float32),"f4"),
                 ("lat",stations.lat.to_numpy(np.float32),"f4"),("capacity_gw",stations.capacity_gw.to_numpy(np.float32),"f4"),
                 ("activation_year",stations.activation_year.to_numpy(np.int16),"i2"),
                 ("match_dist_deg",match.dist_deg.astype(np.float32),"f4")):
