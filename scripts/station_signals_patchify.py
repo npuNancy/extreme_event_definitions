@@ -100,6 +100,10 @@ class _SignalWriter:
         for name,values in masks.items():
             if name not in self._vars:
                 v=self.ds.createVariable(name,"i1",("time","station"),zlib=True,complevel=4)
+                # List the station metadata as CF auxiliary coordinates so
+                # xarray/loss readers see station_id/lon/lat as coords, not
+                # data_vars (mirrors the original xarray writer's dataset).
+                v.coordinates="station_id lon lat capacity_gw activation_year match_dist_deg"
                 v.flag_values="0, 1"; v.flag_meanings="false true"
                 self._vars[name]=v
                 self._events.add(name)
