@@ -153,10 +153,19 @@ def _station_block_signals(a, sub, full_match_slice, ref, opened, times, idx, ye
     sub: station rows; full_match_slice: precomputed match (idx0/idx1/weight/
     dist/valid already aligned to the full grid axes) restricted to sub."""
     ln=_coord(ref,("lat","latitude")); on=_coord(ref,("lon","longitude"))
-    used_lat=np.unique(full_match_slice.idx0); used_lon=np.unique(full_match_slice.idx1)
-    lat_pos=np.full(full_match_slice.idx0.max()+1,-1,dtype=np.int64); lat_pos[used_lat]=np.arange(len(used_lat))
-    lon_pos=np.full(full_match_slice.idx1.max()+1,-1,dtype=np.int64); lon_pos[used_lon]=np.arange(len(used_lon))
-    m=sm.StationSpatialWeights(full_match_slice.stations,lat_pos[full_match_slice.idx0],lon_pos[full_match_slice.idx1],
+    # Read a contiguous lat/lon slab instead of the scattered unique index
+    # lists: netCDF4's get_vars over two scattered axes interleaves chunk
+    # access orders, and with (240,64,64)=3.9 MB chunks against the 1 MB
+    # default chunk cache every access re-decompresses whole chunks — a
+    # sparse block straddling a chunk boundary can livelock in deflate.
+    # A slab reads its chunks strictly sequentially; the station gather
+    # selects rows/cols from the in-memory block afterwards. The chunk set
+    # decompressed is identical to the scattered read (unique indices and
+    # their span cover the same chunks), so cost is unchanged for dense
+    # blocks and bounded for sparse ones.
+    lat_lo=int(full_match_slice.idx0.min()); lat_hi=int(full_match_slice.idx0.max())+1
+    lon_lo=int(full_match_slice.idx1.min()); lon_hi=int(full_match_slice.idx1.max())+1
+    m=sm.StationSpatialWeights(full_match_slice.stations,full_match_slice.idx0-lat_lo,full_match_slice.idx1-lon_lo,
                                full_match_slice.weight,full_match_slice.dist_deg,full_match_slice.valid,
                                grid_kind=full_match_slice.grid_kind,method=full_match_slice.method)
     weather={}
@@ -166,13 +175,14 @@ def _station_block_signals(a, sub, full_match_slice, ref, opened, times, idx, ye
     # variables interpolate per sub-block padded by one source
     # step so linear edges keep their neighbours.
     nt=len(times); k1k0=len(sub)
-    tb=max(64,min(2048,int(1.5e9//max(1,len(used_lat)*len(used_lon)*4))))
+    n_lat=lat_hi-lat_lo; n_lon=lon_hi-lon_lo
+    tb=max(64,min(2048,int(1.5e9//max(1,n_lat*n_lon*4))))
     for v,ds in opened.items():
         with timer(f"weather_{v}"):
             da=_v(ds,v); dt=_coord(ds,("time","valid_time"))
             off_axis = not np.array_equal(ds[dt].values,times)
             src_times=ds[dt].values
-            da=da.isel(**{ln:used_lat,on:used_lon})
+            da=da.isel(**{ln:slice(lat_lo,lat_hi),on:slice(lon_lo,lon_hi)})
             station_series=np.empty((nt,k1k0),dtype=np.float32)
             for s0 in range(0,nt,tb):
                 s1=min(nt,s0+tb)
