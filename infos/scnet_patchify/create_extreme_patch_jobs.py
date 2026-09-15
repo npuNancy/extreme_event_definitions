@@ -10,20 +10,27 @@ def _years_arg(value):
  return value
 
 def parser():
- p=argparse.ArgumentParser(description=__doc__); p.add_argument("--models",nargs="+",default=list(MODELS)); p.add_argument("--scenarios",nargs="+",default=list(SCENARIOS)); p.add_argument("--patches",nargs="+",required=True,metavar="PATCH"); p.add_argument("--techs",nargs="+",choices=TECHS,default=list(TECHS)); p.add_argument("--years",type=_years_arg,default=SUPPORTED_YEARS,help=f"固定使用 {SUPPORTED_YEARS}"); p.add_argument("--bcsd-root",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--output-root",required=True); p.add_argument("--project-dir",default=str(Path(__file__).resolve().parents[2])); p.add_argument("--jobs-dir",required=True); p.add_argument("--logs-dir",required=True); p.add_argument("--partition",default="wzhctest"); p.add_argument("--account"); p.add_argument("--cpus-per-task",type=int,default=10); p.add_argument("--time"); p.add_argument("--overwrite",action="store_true"); p.add_argument("--dry-run",action="store_true"); return p
+ p=argparse.ArgumentParser(description=__doc__); p.add_argument("--models",nargs="+",default=list(MODELS)); p.add_argument("--scenarios",nargs="+",default=list(SCENARIOS)); p.add_argument("--patches",nargs="+",required=True,metavar="PATCH"); p.add_argument("--techs",nargs="+",choices=TECHS,default=list(TECHS)); p.add_argument("--years",type=_years_arg,default=SUPPORTED_YEARS,help=f"固定使用 {SUPPORTED_YEARS}"); p.add_argument("--bcsd-root",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--output-root",required=True); p.add_argument("--project-dir",default=str(Path(__file__).resolve().parents[2])); p.add_argument("--jobs-dir",required=True); p.add_argument("--logs-dir",required=True); p.add_argument("--partition",default="wzhctest"); p.add_argument("--account"); p.add_argument("--cpus-per-task",type=int,default=10); p.add_argument("--time"); p.add_argument("--processes",type=int,default=4,help="station-block worker processes per job (must be <= cpus-per-task)"); p.add_argument("--station-block-size",type=int,default=None); p.add_argument("--parts-root",default=None); p.add_argument("--overwrite",action="store_true"); p.add_argument("--dry-run",action="store_true"); return p
 def main(argv=None):
- a=parser().parse_args(argv); out=Path(a.jobs_dir).expanduser();
+ a=parser().parse_args(argv)
+ if a.processes<1: raise SystemExit("--processes must be >= 1")
+ if a.processes>a.cpus_per_task: raise SystemExit(f"--processes ({a.processes}) must be <= --cpus-per-task ({a.cpus_per_task})")
+ out=Path(a.jobs_dir).expanduser();
  if not a.dry_run: out.mkdir(parents=True,exist_ok=True); Path(a.logs_dir).expanduser().mkdir(parents=True,exist_ok=True)
  rows=[]
  for model,sc,patch,tech in itertools.product(a.models,a.scenarios,a.patches,a.techs):
   jid=f"extp_{model}_{sc}_{patch}_{tech}"; q=shlex.quote; lines=["#!/bin/bash",f"#SBATCH --job-name={jid}",f"#SBATCH --partition={a.partition}",f"#SBATCH --cpus-per-task={a.cpus_per_task}",f"#SBATCH --output={a.logs_dir}/{jid}_%j.out",f"#SBATCH --error={a.logs_dir}/{jid}_%j.out"]
   if a.account: lines.append(f"#SBATCH --account={a.account}")
   if a.time: lines.append(f"#SBATCH --time={a.time}")
-  cmd=["python",str(Path(a.project_dir)/"scripts/station_signals_patchify.py"),"--bcsd-root",a.bcsd_root,"--model",model,"--scenario",sc,"--patch",patch,"--patch-manifest",a.patch_manifest,"--stations-csv",a.stations_csv,"--tech",tech,"--years",a.years,"--output-root",a.output_root]
+  cmd=["python",str(Path(a.project_dir)/"scripts/station_signals_patchify.py"),"--bcsd-root",a.bcsd_root,"--model",model,"--scenario",sc,"--patch",patch,"--patch-manifest",a.patch_manifest,"--stations-csv",a.stations_csv,"--tech",tech,"--years",a.years,"--output-root",a.output_root,"--processes",str(a.processes),"--timing-report"]
+  if a.station_block_size is not None: cmd += ["--station-block-size",str(a.station_block_size)]
+  if a.parts_root: cmd += ["--parts-root",a.parts_root]
   if a.overwrite: cmd.append("--overwrite")
   # Activate first: SCNet's activation hooks may reference optional unset
   # variables, which is incompatible with nounset during shell setup.
-  lines += ["source /work/home/acbpgywfpz/miniconda3/bin/activate climate","set -euo pipefail",f"mkdir -p {q(a.logs_dir)} {q(a.output_root)}",f"cd {q(a.project_dir)}"," ".join(q(x) for x in cmd)]
+  lines += ["source /work/home/acbpgywfpz/miniconda3/bin/activate climate","set -euo pipefail",
+            "export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1",
+            f"mkdir -p {q(a.logs_dir)} {q(a.output_root)}",f"cd {q(a.project_dir)}"," ".join(q(x) for x in cmd)]
   if a.dry_run: rows.append({"unit_id":jid,"model":model,"scenario":sc,"patch":patch,"tech":tech}); continue
   path=out/(jid+".sh");
   if path.exists() and not a.overwrite: raise FileExistsError(path)
