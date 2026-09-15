@@ -8,10 +8,25 @@
 
 1. 本目录 `goal.md`（完成契约、状态分类）、`README.md`
 2. `six_account_config.csv`（六个 worker 账号）、`patch_assignment.csv`（47 个 patch 的归属）、`task_allocation.csv`（1,128 个 unit 的初始分配）、`allocation_summary.csv`
-3. 仓库 `AGENTS.md` 和 `scripts/station_signals_patchify.py --help`
-4. 本目录 `progress.md`：当前已有 555 个可复用完成结果（CANESM5/MPI-ESM1-2-HR 大部分、MRI-ESM2-0 ssp126 部分、BCC-CSM2-MR 无）
+3. **`resubmit_todo.csv`（本轮唯一提交清单，573 个 unit，见下节）**
+4. 仓库 `AGENTS.md` 和 `scripts/station_signals_patchify.py --help`
+5. 本目录 `progress.md`：555 个 unit 已有可复用结果，每轮必须更新
 
-准备阶段已完成，直接进入运行控制：六账号 checkout 已在 `develop-patch@beada1c`，每账号的 1,128 个作业脚本已生成并通过 `bash -n`（`resource_v3_extreme_multiprocess`，16 核/16 进程）。不重复 clone/pull、ACL、脚本生成、BCSD 全量扫描；只在提交前核对目标脚本 hash、unit identity 和 `submit_username`。
+准备阶段已完成，直接进入运行控制：六账号 checkout 已在 `develop-patch@51399a8`，每账号的 1,128 个作业脚本已生成并通过 `bash -n`（`resource_v3_extreme_multiprocess`，16 核/16 进程）。不重复 clone/pull、ACL、脚本生成、BCSD 全量扫描；只在提交前核对目标脚本 hash、unit identity 和 `submit_username`。
+
+## 本轮范围：只提交剩余 573 个 unit
+
+交叉核对结论（2026-09-15，详见 `tmp/codex检查结果/交叉对比报告.md`）：555 个 unit 已有可复用的最终文件 + sidecar（元数据校验通过），**不重跑**；本轮只提交 `resubmit_todo.csv` 中的 573 个 unit：
+
+```text
+522 个 never-submitted（MRI-ESM2-0 ssp245/585 全量、BCC-CSM2-MR 全量为主）
+ 32 个 cancelled（历史取消，含可复用的已完成 part）
+ 19 个 incomplete_output（CANESM5 旧版 writer 的 station_id 截断损坏文件，必须重跑）
+```
+
+19 个损坏 unit 的判定依据：`.nc` 和 sidecar 存在但 `station_id` dtype 为 `S1`（每 ID 1 字符、不唯一），文件存在 ≠ 可复用；重跑脚本带 `--overwrite` 会原子替换损坏文件。这 573 个 unit 按 `task_allocation.csv` 的 `submit_account` 分布：乌镇1850/118、乌镇1555/100、乌镇1872/99、乌镇1352/91、乌镇1731/83、乌镇1500/82。19 + 32 个 unit 的历史残留 `.partial`/损坏文件由重跑自动覆盖或复用，提交前不必手工清理（作业的 `--overwrite` + part-reuse 语义已覆盖）；若某 unit 的输出路径存在非预期文件冲突，记 `unknown` 并报告，不删除任何已有文件。
+
+**ready 判定**：`resubmit_todo.csv` 中的 unit 且同 unit 的 BCSD 六变量 final + sidecar 可用。不在清单中的 555 个 unit 即使槽位空闲也不提交。model/SSP/tech 顺序（CANESM5 → MPI-ESM1-2-HR → MRI-ESM2-0 → BCC-CSM2-MR；ssp126 → ssp245 → ssp585；wind → solar）只是清单内提交优先级，不是屏障。
 
 ## 固定路径
 
@@ -38,16 +53,14 @@ runtime:<AGG_ROOT>/runtime/patchify_generation_loss_202609/（task_state.jsonl�
 ## Campaign 与可提交条件
 
 ```text
-unit_id = extreme/<model>/<ssp>/<tech>/<patch>，共 1,128 个
+unit_id = extreme/<model>/<ssp>/<tech>/<patch>，共 1,128 个；本轮提交 573 个（resubmit_todo.csv）
 model 顺序: CANESM5 → MPI-ESM1-2-HR → MRI-ESM2-0 → BCC-CSM2-MR
 SSP 顺序: ssp126 → ssp245 → ssp585；tech: wind → solar
-六账号及 unit 数: 乌镇1850/216、1872/192、1555/192、1352/192、1731/168、1500/168
+六账号初始分配 573 个: 乌镇1850/118、乌镇1555/100、乌镇1872/99、乌镇1352/91、乌镇1731/83、乌镇1500/82
 每账号 20 个 account-wide active jobs；全局目标 6 × 20 = 120
 ```
 
-依赖仅一条：同 unit 的 BCSD 六变量 final + sidecar 可用即 ready（不等待 CF）。BCC-CSM2-MR 的 BCSD 仍在补齐，其未就绪 unit 记 `dependency_blocked`，不阻塞其他 model。model/SSP/tech 顺序只是 ready 队列优先级，不是屏障：当前优先级无 ready unit 时立即从后续优先级补槽。
-
-**已完成的 555 个 unit 不重跑**：输出根已有其 final + sidecar，先扫描输出根并对照 `progress.md` 建立 done 集；只有 done 集之外且 BCSD 就绪的 unit 才是本轮提交对象（约 573 个）。
+依赖仅一条：同 unit 的 BCSD 六变量 final + sidecar 可用即 ready（不等待 CF）。BCC-CSM2-MR 的 BCSD 仍在补齐，其未就绪 unit 记 `dependency_blocked`，不阻塞其他 model。
 
 ## 15 分钟控制循环（Asia/Shanghai，hh:00/15/30/45）
 
@@ -63,7 +76,7 @@ SSP 顺序: ssp126 → ssp245 → ssp585；tech: wind → solar
 ```text
 acquire <AGG_ROOT>/runtime/patchify_generation_loss_202609/.submit.lock
   统计 account-wide active jobs（不能只看本项目）
-  选择 ready 且 not_submitted 的 unit（done 集之外）
+  选择 resubmit_todo.csv 中 ready 且 not_submitted 的 unit
   提交前重新统计目标账号
   sbatch --parsable -A <SUBMIT_USERNAME> <SCRIPT>
   记录 Job ID、unit_id、submit_username、assignment_version、脚本 SHA-256
@@ -74,7 +87,7 @@ release lock
 
 ## 动态重分配
 
-账号提前跑完、出现空槽而其他账号仍有 ready unit 时：排除 active/已成功/依赖未满足/已有 active Job 的 unit；保留 `logical_owner`，只改 `submit_account`、`submit_username`，递增 `assignment_version`；直接选目标账号既有 `.sh`（普通重分配禁止重跑 generator）；核对脚本 hash、unit identity、`--processes 16`、`--submit-username`、输入/输出根；锁内重估槽位后提交；旧/新账号、脚本、原因、时间、版本写 `reassignment_log.jsonl`。每账号备有全部 1,128 个脚本正是为了这一步。不得迁移/取消 active Job 或重复提交。
+账号提前跑完、出现空槽而其他账号仍有 ready unit 时：从 `resubmit_todo.csv` 排除 active/已成功/依赖未满足/已有 active Job 的 unit；保留 `logical_owner`，只改 `submit_account`、`submit_username`，递增 `assignment_version`；直接选目标账号既有 `.sh`（普通重分配禁止重跑 generator）；核对脚本 hash、unit identity、`--processes 16`、`--submit-username`、输入/输出根；锁内重估槽位后提交；旧/新账号、脚本、原因、时间、版本写 `reassignment_log.jsonl`。每账号备有全部 1,128 个脚本正是为了这一步。不得迁移/取消 active Job 或重复提交。
 
 ## 状态、完成与失败处理
 
@@ -84,4 +97,4 @@ unit 记 `succeeded` 须同时满足：Slurm `COMPLETED/0:0`；`<tech>.nc` + `.n
 
 ## 终止条件
 
-1,128 个 unit 全部 `succeeded` 或 `succeeded_skip`（含已有 555 个），无 active/retryable/incomplete/dependency-blocked/unknown，所有输出在共享输出根可审计，`progress.md`、assignment/reassignment 日志完整——goal 才能结束。BCC-CSM2-MR 若 BCSD 长期未就绪，其剩余 unit 以 `dependency_blocked` 呈报并等用户决定，不得伪造完成。
+1,128 个 unit 全部 `succeeded` 或 `succeeded_skip`（含已有 555 个——其完成状态在启动时从输出根 + `progress.md` 继承，不需重验），本轮 573 个全部终态，无 active/retryable/incomplete/dependency-blocked/unknown，所有输出在共享输出根可审计，`progress.md`、assignment/reassignment 日志完整——goal 才能结束。BCC-CSM2-MR 若 BCSD 长期未就绪，其剩余 unit 以 `dependency_blocked` 呈报并等用户决定，不得伪造完成。

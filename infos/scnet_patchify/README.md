@@ -15,9 +15,11 @@ extreme/<model>/<scenario>/<technology>/<patch_id>
 - `six_account_config.csv`：本轮可用的 6 个 worker 账号。乌镇151、173、9259、9359 因欠费排除。
 - `patch_assignment.csv`：47 个 patch 的逻辑 owner 与实际 submit account。逻辑 owner 永不改变；不可用 owner 的 patch 已按当前累计 patch 数转移给六个可用账号。
 - `task_allocation.csv`：完整 1,128 行 unit 分配表。
+- `resubmit_todo.csv`：本轮正式运行的唯一提交清单（573 个 unit = 1,128 − 555 个已有可复用结果；含 19 个旧版 station_id 损坏需重跑的 unit）。
 - `allocation_summary.csv`：账号、patch 和 unit 数量。
-- `develop-patch_正式运行提示词.md`：提交前运行控制提示词。
+- `develop-patch_正式运行提示词.md`：正式运行控制提示词。
 - `goal.md`：本轮 Extreme-only 目标、依赖、资源和完成契约。
+- `progress.md`：完成进度表，每 15 分钟控制循环必须更新。
 
 分配结果为：乌镇1850 216 个 unit，乌镇1872/1555/1352 各 192 个，乌镇1731/1500 各 168 个。所有账号上限仍为 20 个 active jobs，全局最多 120 个 active jobs。
 
