@@ -15,6 +15,20 @@ from grid_extreme_signals.unit_conversion import hurs_to_pct, pr_to_mmh, rsds_to
 from tools import common
 
 NEEDED={"wind":("tas","uas","vas","hurs","pr"),"solar":("tas","uas","vas","hurs","pr","rsds")}
+SUPPORTED_YEARS = "2015-2060"
+
+
+def _validate_years(value):
+    if value != SUPPORTED_YEARS:
+        raise ValueError(f"--years 目前只允许输入 {SUPPORTED_YEARS}，收到 {value!r}")
+    return value
+
+
+def _years_arg(value):
+    try:
+        return _validate_years(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 def final(root, model, scenario, var, patch):
     base=Path(root).expanduser()/"outputs"/model/scenario/var
@@ -117,6 +131,7 @@ class _SignalWriter:
         self.ds.close()
 
 def run(a):
+    _validate_years(a.years)
     # Read patch bbox from an optional manifest; explicit bbox is required so the
     # The manifest is the only spatial ownership source.
     manifest=json.loads(Path(a.patch_manifest).read_text())
@@ -214,5 +229,5 @@ def run(a):
         for ds in opened.values(): ds.close()
 
 def parser():
-    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--bcsd-root",required=True); p.add_argument("--model",required=True); p.add_argument("--scenario",required=True); p.add_argument("--patch",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--tech",choices=("wind","solar"),required=True); p.add_argument("--years",default="2015-2060"); p.add_argument("--output-root",required=True); p.add_argument("--spatial-method",choices=("nearest","bilinear"),default="nearest"); p.add_argument("--max-distance-deg",type=float,default=.15); p.add_argument("--overwrite",action="store_true",help="rewrite existing output (the job generator always passes this; output writing is atomic tmp+replace anyway)"); return p
+    p=argparse.ArgumentParser(description=__doc__); p.add_argument("--bcsd-root",required=True); p.add_argument("--model",required=True); p.add_argument("--scenario",required=True); p.add_argument("--patch",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--tech",choices=("wind","solar"),required=True); p.add_argument("--years",type=_years_arg,default=SUPPORTED_YEARS,help=f"固定使用 {SUPPORTED_YEARS}"); p.add_argument("--output-root",required=True); p.add_argument("--spatial-method",choices=("nearest","bilinear"),default="nearest"); p.add_argument("--max-distance-deg",type=float,default=.15); p.add_argument("--overwrite",action="store_true",help="rewrite existing output (the job generator always passes this; output writing is atomic tmp+replace anyway)"); return p
 if __name__=="__main__": run(parser().parse_args())

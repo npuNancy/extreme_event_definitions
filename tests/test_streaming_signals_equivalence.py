@@ -116,7 +116,7 @@ def test_streaming_matches_reference():
             args.bcsd_root = str(root / "bcsd"); args.model = "M"; args.scenario = "ssp126"
             args.patch = "P1"; args.patch_manifest = str(root / "patch_manifest.json")
             args.stations_csv = str(root / "stations.csv"); args.tech = tech
-            args.years = "2015-2015"; args.output_root = str(out_root)
+            args.years = "2015-2060"; args.output_root = str(out_root)
             args.spatial_method = "nearest"; args.max_distance_deg = 0.15
             import station_signals_patchify as ssp
             rows = pd.read_csv(root / "stations.csv"); rows["type"] = tech

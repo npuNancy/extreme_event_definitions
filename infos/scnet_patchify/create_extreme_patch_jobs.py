@@ -3,9 +3,14 @@
 from __future__ import annotations
 import argparse,itertools,json,shlex
 from pathlib import Path
-MODELS=("CANESM5","MPI-ESM1-2-HR","MRI-ESM2-0","BCC-CSM2-MR"); SCENARIOS=("ssp126","ssp245","ssp585"); TECHS=("wind","solar"); PATCHES=()
+MODELS=("CANESM5","MPI-ESM1-2-HR","MRI-ESM2-0","BCC-CSM2-MR"); SCENARIOS=("ssp126","ssp245","ssp585"); TECHS=("wind","solar"); PATCHES=(); SUPPORTED_YEARS="2015-2060"
+
+def _years_arg(value):
+ if value != SUPPORTED_YEARS: raise argparse.ArgumentTypeError(f"--years 目前只允许输入 {SUPPORTED_YEARS}，收到 {value!r}")
+ return value
+
 def parser():
- p=argparse.ArgumentParser(description=__doc__); p.add_argument("--models",nargs="+",default=list(MODELS)); p.add_argument("--scenarios",nargs="+",default=list(SCENARIOS)); p.add_argument("--patches",nargs="+",required=True,metavar="PATCH"); p.add_argument("--techs",nargs="+",choices=TECHS,default=list(TECHS)); p.add_argument("--years",default="2015-2060"); p.add_argument("--bcsd-root",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--output-root",required=True); p.add_argument("--project-dir",default=str(Path(__file__).resolve().parents[2])); p.add_argument("--jobs-dir",required=True); p.add_argument("--logs-dir",required=True); p.add_argument("--partition",default="wzhctest"); p.add_argument("--account"); p.add_argument("--cpus-per-task",type=int,default=10); p.add_argument("--time"); p.add_argument("--overwrite",action="store_true"); p.add_argument("--dry-run",action="store_true"); return p
+ p=argparse.ArgumentParser(description=__doc__); p.add_argument("--models",nargs="+",default=list(MODELS)); p.add_argument("--scenarios",nargs="+",default=list(SCENARIOS)); p.add_argument("--patches",nargs="+",required=True,metavar="PATCH"); p.add_argument("--techs",nargs="+",choices=TECHS,default=list(TECHS)); p.add_argument("--years",type=_years_arg,default=SUPPORTED_YEARS,help=f"固定使用 {SUPPORTED_YEARS}"); p.add_argument("--bcsd-root",required=True); p.add_argument("--patch-manifest",required=True); p.add_argument("--stations-csv",required=True); p.add_argument("--output-root",required=True); p.add_argument("--project-dir",default=str(Path(__file__).resolve().parents[2])); p.add_argument("--jobs-dir",required=True); p.add_argument("--logs-dir",required=True); p.add_argument("--partition",default="wzhctest"); p.add_argument("--account"); p.add_argument("--cpus-per-task",type=int,default=10); p.add_argument("--time"); p.add_argument("--overwrite",action="store_true"); p.add_argument("--dry-run",action="store_true"); return p
 def main(argv=None):
  a=parser().parse_args(argv); out=Path(a.jobs_dir).expanduser();
  if not a.dry_run: out.mkdir(parents=True,exist_ok=True); Path(a.logs_dir).expanduser().mkdir(parents=True,exist_ok=True)
