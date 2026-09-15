@@ -308,9 +308,25 @@ processes <= cpus-per-task
 Phase 0 + Phase 1 已实施（`scripts/station_signals_patchify.py`、`infos/scnet_patchify/create_extreme_patch_jobs.py`）。Extreme 专项测试已通过：
 
 ```text
-38 passed
+39 passed
 ```
 
-其中新增 `tests/test_multiprocess_signals_equivalence.py`：`--processes 2/4`（wind/solar 各两组）与串行输出逐位一致；part 布局与 sidecar 契约；part 重试语义（无有效 sidecar 的 part 重算，其余复用）。
+其中新增 `tests/test_multiprocess_signals_equivalence.py`：`--processes 2/4`（wind/solar 各两组）与串行输出逐位一致；part 布局与 sidecar 契约；part 重试语义（无有效 sidecar 的 part 重算，其余复用）。以及 `tests/test_slab_read_regression.py`：chunk-cache 活锁回归测试。
+
+### 2026-09-15 乌镇199 pilot（slab 读取修复后）
+
+unit：`BCC-CSM2-MR / ssp126 / R03C09 / solar`（17823 站，58 part）：
+
+```text
+n=4  (10 核): COMPLETED  1:10:42   MaxRSS 14.4 GB
+n=8  (10 核): COMPLETED  0:41:14   MaxRSS 17.6 GB
+n=16 (16 核): COMPLETED  0:27:28   MaxRSS 31.4 GB
+```
+
+- 修复前：n=4/n=8 作业在 part 16/40/53 上 HDF5 解压活锁（同一批 chunk 无限重复解压），3 小时零进展；n=1/n=2 串行路径同样会命中。
+- 修复后：part 16/40/53 分别以 62.8s/90.8s/43.0s 正常完成；hurs 单变量耗时从 55–62s 降到 22–25s。
+- n=4 与 n=16 输出逐位一致（全部 6 个事件 × 全时序抽查通过）。
+- merge 阶段稳定在 ~10 分钟，与 n 无关；compute 阶段 n=4→8→16 为 59.5→30.3→16.9 分钟，近线性扩展。
+- 换算：n=16 时每 part 平均 ~29s；正式 campaign 若用 n=16/16 核，单个 logical unit 约 0.5 小时，1128 个 unit 在 10 账号 × 20 并发下约 3 小时批次（I/O 竞争会拉长）。
 
 完整 pytest 会额外收集 `ref_code` 下的历史测试，并出现 6 个收集错误：4 个因缺少 `windpowerlib` 环境依赖，1 个是 `ref_code/bcsd/repair_bcsd_missing` 中 `convert_era5land_var` 导入失败，1 个是 `ref_code/calculate_wind_solar_out/scnet` 中 `create_station_output_jobs` 导入失败。后两类是 `ref_code` 历史代码自身的问题，与当前 Extreme 主流程无关。
