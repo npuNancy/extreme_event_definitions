@@ -1,0 +1,7 @@
+﻿owner_code,host,username,role,active_job_limit,patch_count,source_note
+乌镇1850,scnet-wuzhen-1850,acf9hhlwmd,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
+乌镇1872,scnet-wuzhen-1872,acjpoxgsdu,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
+乌镇1555,scnet-wuzhen-1555,ac4wf1cvxp,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
+乌镇1352,scnet-wuzhen-1352,acm83pfnji,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
+乌镇1731,scnet-wuzhen-1731,ac2k2a2td1,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
+乌镇1500,scnet-wuzhen-1500,acp6varuz3,worker,20,5,来自 account_config.csv；无 notes 表示当前可用，提交前仍需 SSH/squeue/sacct preflight
