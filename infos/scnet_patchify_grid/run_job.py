@@ -66,7 +66,7 @@ def preflight(args):
     if args.model not in selected or any(v not in MODELS for v in selected):
         raise ValueError("model not in the user-confirmed runtime allowlist")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    branch = subprocess.check_output(["git", "branch", "--show-current"], cwd=ROOT, text=True).strip()
+    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()
     if head != args.code_sha or branch != "develop-patch-grid" or dirty:
         raise ValueError("checkout must be clean develop-patch-grid at the pinned code SHA")
