@@ -1,4 +1,4 @@
-# global_bcsd patchify station-signal runtime
+# global_bcsd native-grid extreme-signal runtime
 numpy>=1.23
 pandas>=1.5
 xarray>=2023.1.0

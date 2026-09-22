@@ -119,6 +119,11 @@ def low_resource(resource, time, pct=PCT, base_mask=None, night=None,
         ab = anom if base_mask is None else anom[np.asarray(base_mask, bool)]
         with np.errstate(all="ignore"):
             thr = np.nanpercentile(np.where(np.isfinite(ab), ab, np.nan), pct, axis=0)
+    return low_resource_from_anomaly(anom, thr, night=night, mark_next_step=mark_next_step)
+
+
+def low_resource_from_anomaly(anom, thr, *, night=None, mark_next_step=True):
+    """Apply the existing event/next-step/night rules to a precomputed anomaly."""
     ev = anom <= thr[None, :]
     ev2 = ev.copy()
     if mark_next_step:

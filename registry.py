@@ -28,6 +28,15 @@ SIMPLE = {
 LOWRES = {"wind": wind_low_resource, "solar": solar_low_resource}
 LOWRES_RESOURCE = {"wind": "wind_ms", "solar": "rsds"}
 
+# Required weather fields also define each event's validity mask on a grid.
+REQUIRED = {
+    "wind": {"icing": ("temp_C", "rh_pct"), "high_temp": ("temp_C",),
+             "hot_humid": ("temp_C", "rh_pct"), "high_wind": ("wind_ms",)},
+    "solar": {"freezing_rain": ("temp_C", "precip_mmh"), "dust": ("dust_aod",),
+              "rainstorm": ("precip_mmh",), "high_humidity": ("rh_pct",),
+              "cold_highwind": ("temp_C", "wind_ms"), "icing": ("temp_C", "rh_pct")},
+}
+
 
 def simple_signals(tech, weather, skip_missing=True):
     """该技术全部简单阈值事件掩码 {name:(T,K) bool}。
@@ -111,4 +120,3 @@ def list_all():
     logger.info("低资源事件（BCSD 资源时序）：")
     for tech, m in LOWRES.items():
         logger.info("  [%s] %-6s %-14s : %s", tech, m.LABEL, m.NAME, m.EXPR)
-
