@@ -362,6 +362,22 @@ def test_all_domain_empty_and_incomplete_year(tmp_path):
         io.select_years(netCDF4.num2date(np.arange(100)*3, "hours since 2024-02-01", "365_day"), "2024")
 
 
+@pytest.mark.parametrize("calendar", ["365_day", "proleptic_gregorian"])
+@pytest.mark.parametrize("phase", [0, 1.5, 3])
+def test_native_year_start(calendar, phase):
+    hours = np.arange(phase, 365 * 24, 3)
+    dates = netCDF4.num2date(hours, "hours since 2015-01-01", calendar)
+    assert io.select_years(dates, "2015") == (0, len(hours))
+
+
+@pytest.mark.parametrize("phase", [3 + 1 / 3600, 4.5, 6])
+def test_late_year_start_is_incomplete(phase):
+    dates = netCDF4.num2date(np.arange(phase, 365 * 24, 3),
+                            "hours since 2015-01-01", "365_day")
+    with pytest.raises(ValueError, match="incomplete year coverage"):
+        io.select_years(dates, "2015")
+
+
 def test_input_changes_invalidate_baseline(tmp_path):
     build_grid(tmp_path)
     compute.run(args(tmp_path, "baseline"), "baseline")

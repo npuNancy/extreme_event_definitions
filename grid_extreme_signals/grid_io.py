@@ -164,9 +164,9 @@ def select_years(dates, value):
     if set(t.year for t in dates[selected]) != set(range(start, end + 1)):
         raise ValueError(f"reference time axis does not cover every year in {value}")
     first, last = dates[selected[0]], dates[selected[-1]]
-    # Permit the source's sub-three-hour phase (e.g. 01:30) without accepting
-    # an incomplete year as a complete climatological baseline.
-    if (first.month, first.day) != (1, 1) or first.hour >= 3 or (
+    # Native source years can begin at 01:30 (means) or 03:00 (point values).
+    if (first.month, first.day) != (1, 1) or (
+            first.hour, first.minute, first.second, first.microsecond) > (3, 0, 0, 0) or (
             last.month, last.day) != (12, 31) or last.hour < 21:
         raise ValueError(f"reference time axis has incomplete year coverage for {value}")
     return int(selected[0]), int(selected[-1] + 1)
