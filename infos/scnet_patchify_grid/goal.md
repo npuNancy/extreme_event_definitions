@@ -1,5 +1,7 @@
 # production V2 全网格 Extreme 运行契约
 
+立即创建并持续执行一个 goal，不设 token budget。
+
 ## 目标与范围
 
 先询问用户本轮运行哪个/哪些 GCM，确认后记录 `selected_models`、确认时间、RUN_ID 和代码 SHA。只对所选 GCM 创建并持续执行 Goal；未选模型即使 V2 就绪或已有脚本，也不提交。当前仅 CANESM5 被用户报告已完成 V2，不自动扩大为 4 模型。
@@ -82,8 +84,8 @@ audit 依赖的组合索引必须覆盖一个基线及全部时间段，列出�
 
 每轮按“检查 → 判断 → 更新状态 → 执行补槽/重试/重分配 → 记录动作”执行。无状态变化也更新：
 
-- 本地 `infos/scnet_patchify_grid/progress.md`：准备、pilot、baseline、signals、audit、汇总的阶段表和按 GCM/SSP 的计数。
-- 每个使用到的本地 `completion_status/` 下必须有 `progress.md`，一行一个 unit；另存 JSONL/JSON 台账。字段为 unit_id、stage、model、scenario、tech、patch、years、logical_owner、submit_username、assignment_version、attempt、job_id、scheduler_state、exit_code、elapsed、memory、output/receipt、classification、reason、observed_at、next_action。
+- 统一汇总到本地 `infos/scnet_patchify_grid/completion_status/progress.md`，仅保留 `Last checked` 和模型 × SSP 表格。列为 model、ssp126、ssp245、ssp585；每格按完成组合数/总组合数统计，默认每模型每SSP为47 patch × 2 tech = 94。组合的baseline、全部signals和audit成功且1500可访问权威产物后才计入完成；全部完成标 `94/94 ✅`，未完成如 `0/94`，未选模型标 `未选`，不计入本轮分母。
+- 准备、pilot及各计算阶段的详细状态、逐unit记录和调度信息保存在中心及本地 `completion_status/` 的 JSONL/JSON 台账。字段为 unit_id、stage、model、scenario、tech、patch、years、logical_owner、submit_username、assignment_version、attempt、job_id、scheduler_state、exit_code、elapsed、memory、output/receipt、classification、reason、observed_at、next_action。
 - 时间均记录 Asia/Shanghai，保留未观测 unit 并标 unknown；记录下一次对齐检查时间。进度和调度快照被 Git ignore。
 
 Goal 终点：仅所选 GCM 的全部基线、信号、audit 成功，1500 可访问全部权威产物及索引；无 active/retryable/incomplete/blocked/unknown。其他未选 GCM 不计入分母，也不等待它们的 BCSD。遇无法自主解决的外部阻塞，明确报告缺项，不伪报完成。

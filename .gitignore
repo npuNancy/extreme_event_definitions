@@ -16,5 +16,4 @@ __pycache__/
 .vscode/
 .claude/
 /infos/scnet_patchify/progress.md
-/infos/scnet_patchify_grid/progress.md
 /infos/scnet_patchify_grid/completion_status/

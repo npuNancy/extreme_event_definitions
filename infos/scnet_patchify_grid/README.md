@@ -12,7 +12,7 @@
 - `运行前准备.md`：所有计算账号更新代码、共享目录和权限探测、**每个账号生成完整作业包**。
 - `作业分工/patch_assignment.csv`、`作业分工/作业组合提交顺序.md`：初始均衡分工与滚动提交顺序。
 - `goal.md`：运行契约、依赖、完成判据、动态重分配、监控与重试。
-- `progress.md`：本地运行进度，忽略于 Git；新 checkout 按 goal 中的字段重建。
+- `completion_status/progress.md`：统一的本地结果汇总，仅含 Last checked 和模型 × SSP 完成计数表，忽略于 Git；计数口径见 goal。
 - `develop-patch-grid_正式运行提示词.md`：3800–4000 UTF-16 字符的 CodingAgent Goal 提示词。
 
 本轮文件建设不等于远程准备或作业提交已完成；真实 V2 路径、权限、容量和 pilot 结果必须在运行前记录。
@@ -71,4 +71,4 @@ python3 /data6/yanxiaokai/project_climate/bcsd/utils/check_prompt_chars.py \
   infos/scnet_patchify_grid/develop-patch-grid_正式运行提示词.md
 ```
 
-本地验证（2026-09-22）：工作流测试12项通过，覆盖库存/依赖、跨目录生成一致性、Shell语法、拒绝覆盖、V1软链接隔离、跨账号目录的基线与信号审核；全量dry-run为13,536个脚本。提示词经指定检查器统计为3,989个UTF-16字符。远程权限、V2实际路径和pilot仍待运行阶段验证。
+本地验证（2026-09-22）：工作流测试12项通过，覆盖库存/依赖、跨目录生成一致性、Shell语法、拒绝覆盖、V1软链接隔离、跨账号目录的基线与信号审核；全量dry-run为13,536个脚本。提示词经指定检查器统计为3,999个UTF-16字符。远程权限、V2实际路径和pilot仍待运行阶段验证。

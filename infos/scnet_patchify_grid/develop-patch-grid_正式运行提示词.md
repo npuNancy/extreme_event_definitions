@@ -34,6 +34,6 @@ EXTREME_ENV_FILE指向该worker share的campaign.env，配置代码路径、RUN_
 
 TIMEOUT、节点故障、短暂I/O最多自动重试2次；OOM调整资源或并行度并生成新profile后再试。参数、代码、权限、版本或identity错误停止相关依赖链报告，不能绕过校验。提交拒绝记录原始原因调查；超算不能查余额，sshare已用核时不可靠，禁止据此估算余额。unknown/incomplete_output/dependency_blocked等保留真实状态，不记成功。
 
-每轮无变化也更新本目录progress.md、中心台账及本地completion_status/progress.md，记录逐unit状态、GCM/SSP分阶段计数、观测时间、原因、下一步与下次检查时间；状态不入Git。准备、pilot、baseline、signals、audit、1500验收分别记录，未执行不得填已完成。回复进展、阻塞及有依据的预计完成时间。
+每轮无变化也更新本目录completion_status/progress.md，仅含Last checked和model×SSP表：每格为已完成组合数/94，全成标✅，未选标未选。完成须baseline、全部signals、audit成功且1500可访问产物。各阶段、逐unit状态、原因和下次检查时间存中心及本地JSON台账，状态不入Git。回复进展、阻塞和有依据的预计完成时间。
 
 持续执行直到仅所选GCM全部baseline/signals/audit成功、1500可访问所有权威产物和索引、无active/retryable/incomplete/blocked/unknown。未选模型不计入分母。外部阻塞无法解决时明确报告缺项，不能伪报Goal完成；上下文压缩后从台账接续，避免重复提交。
