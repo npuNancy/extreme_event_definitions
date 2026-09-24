@@ -6,7 +6,7 @@
 
 ## 文件与边界
 
-- `accounts.csv`：8 个计算账号和 1 个汇总账号，唯一角色清单。
+- `accounts.csv`：18 个计算账号和 1 个汇总账号，唯一角色清单。
 - `create_jobs.py`：仅生成账号无关的 Slurm 脚本、依赖和脚本 SHA-256 清单；标准库运行，不提交。
 - `run_job.py`：计算节点上的 V2/代码/账号预检，调用现有计算入口，执行分布式结果审核并生成 receipt。
 - `运行前准备.md`：所有计算账号更新代码、共享目录和权限探测、**每个账号生成完整作业包**。
@@ -19,7 +19,7 @@
 
 ## 账号与存储
 
-乌镇1500（`scnet-wuzhen-1500 / acp6varuz3`）只做汇总。计算使用乌镇199、1892、1520、1870、1959、1752、1862、1359。每个计算账号最多 20 个 account-wide active jobs，8 个账号最多 160，其他项目在途作业同样占槽。
+乌镇1500（`scnet-wuzhen-1500 / acp6varuz3`）只做汇总。计算账号以 `accounts.csv` 为准，共18个。每个计算账号最多 20 个 account-wide active jobs，18 个账号最多 360，其他项目在途作业同样占槽。
 
 ```text
 代码：$HOME/project_climate/repos/extreme_event_definitions
@@ -28,7 +28,7 @@
     parts/、jobs/、logs/、runtime/receipts/
 计算账号 home 链接：$HOME/extreme_grid/<RUN_ID> → 上述实体根
 汇总账号实体根：/work/share/acp6varuz3/extreme_grid/<RUN_ID>/
-    workers/<计算用户名> → 对应计算账号实体根，共 8 个链接
+    workers/<计算用户名> → 对应计算账号实体根，共 18 个链接
     runtime/：选择范围、输入版本、台账、共享提交锁、结果索引
 汇总账号 home 链接：$HOME/extreme_grid/<RUN_ID> → 汇总实体根
 ```
@@ -37,16 +37,17 @@
 
 ## 数量与生成
 
-**脚本库存**可以包含 4 个模型；**本轮运行范围**必须先询问用户选择哪些 GCM，不因脚本存在就执行。当前用户只报告 CANESM5 已完成 V2，上述事实不等于已选择它运行。
+**脚本库存**包含 4 个模型；**本轮运行范围**已确定为 MPI-ESM1-2-HR、MRI-ESM2-0、BCC-CSM2-MR。CANESM5 已完成，不纳入本轮提交。
 
 默认 2015–2060，基线 2015–2024，信号按五年分片：
 
 | 范围 | baseline | signals | audit | Slurm unit 总数 |
 |---|---:|---:|---:|---:|
 | 1 个 GCM × 3 SSP × 47 patch × 2 tech | 282 | 2,820 | 282 | 3,384 |
+| 本轮 3 个 GCM | 846 | 8,460 | 846 | 10,152 |
 | 4 个 GCM 脚本库存 | 1,128 | 11,280 | 1,128 | 13,536 |
 
-在 **每个计算账号** 用同一 SHA、参数及 profile 生成全部 13,536 份脚本；8 账号总共 108,288 份副本，但逻辑任务仅一套。生成器也支持显式缩小模型/SSP/patch 范围供测试，不自动 SSH 或复制到其他账号。
+在 **每个计算账号** 用同一 SHA、参数及 profile 生成全部 13,536 份脚本；18 账号总共 243,648 份副本，但逻辑任务仅一套。生成器也支持显式缩小模型/SSP/patch 范围供测试，不自动 SSH 或复制到其他账号。
 
 ```bash
 python3 infos/scnet_patchify_grid/create_jobs.py \
@@ -71,4 +72,4 @@ python3 /data6/yanxiaokai/project_climate/bcsd/utils/check_prompt_chars.py \
   infos/scnet_patchify_grid/develop-patch-grid_正式运行提示词.md
 ```
 
-本地验证（2026-09-22）：工作流测试12项通过，覆盖库存/依赖、跨目录生成一致性、Shell语法、拒绝覆盖、V1软链接隔离、跨账号目录的基线与信号审核；全量dry-run为13,536个脚本。提示词经指定检查器统计为3,999个UTF-16字符。远程权限、V2实际路径和pilot仍待运行阶段验证。
+本地验证（2026-09-24）：工作流测试12项通过，覆盖库存/依赖、账号与分工、跨目录生成一致性、Shell语法、拒绝覆盖、V1软链接隔离、跨账号目录的基线与信号审核；全量dry-run为13,536个脚本。提示词经指定检查器统计为3,996个UTF-16字符。新增账号的远程权限、共享环境和V2访问需在运行前验证。

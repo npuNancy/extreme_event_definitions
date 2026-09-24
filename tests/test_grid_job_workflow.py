@@ -1,4 +1,5 @@
 """Job-pack determinism and distributed baseline/signals completion contracts."""
+import csv
 import hashlib
 import json
 from pathlib import Path
@@ -34,6 +35,19 @@ def test_inventory_and_dependencies(tmp_path):
     m, s = jobs.build(full)
     assert m["counts"] == {"baseline":1128,"signals":11280,"audit":1128}
     assert len(s) == 13536
+    with (ROOT / "infos/scnet_patchify_grid/accounts.csv").open() as stream:
+        workers = {row["username"]: row for row in csv.DictReader(stream) if row["role"] == "worker"}
+    with (ROOT / "infos/scnet_patchify_grid/作业分工/patch_assignment.csv").open() as stream:
+        patches = list(csv.DictReader(stream))
+    assert len(workers) == 18
+    assert len(patches) == 47
+    assert set(m["workers"]) == set(workers) == {row["username"] for row in patches}
+    assert {username: sum(row["username"] == username for row in patches)
+            for username in ("acjpoxgsdu", "acf9hhlwmd", "ac4wf1cvxp")} == {
+                "acjpoxgsdu": 1, "acf9hhlwmd": 1, "ac4wf1cvxp": 1}
+    assert all((row["logical_owner"], row["host"]) ==
+               (workers[row["username"]]["label"], workers[row["username"]]["host"])
+               for row in patches)
 
 
 def test_identical_scripts_syntax_and_roles(tmp_path):

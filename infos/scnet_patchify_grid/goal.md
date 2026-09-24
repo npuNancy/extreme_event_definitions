@@ -4,9 +4,9 @@
 
 ## 目标与范围
 
-先询问用户本轮运行哪个/哪些 GCM，确认后记录 `selected_models`、确认时间、RUN_ID 和代码 SHA。只对所选 GCM 创建并持续执行 Goal；未选模型即使 V2 就绪或已有脚本，也不提交。当前仅 CANESM5 被用户报告已完成 V2，不自动扩大为 4 模型。
+本轮固定运行 MPI-ESM1-2-HR、MRI-ESM2-0、BCC-CSM2-MR，记录 `selected_models`、用户确认时间、RUN_ID 和代码 SHA，立即创建并持续执行 Goal。CANESM5 已完成，不纳入本轮提交。
 
-在 `accounts.csv` 的 8 个 worker 上完成所选模型的 `baseline → signals → audit`，所有结果写执行账号自己的 `/work/share/<user>/extreme_grid/<RUN_ID>`，并通过乌镇1500的 8 个 worker 链接和权威产物索引可访问。1500 不运行 Slurm 作业。
+在 `accounts.csv` 的 18 个 worker 上完成所选模型的 `baseline → signals → audit`，所有结果写执行账号自己的 `/work/share/<user>/extreme_grid/<RUN_ID>`，并通过乌镇1500的 18 个 worker 链接和权威产物索引可访问。1500 不运行 Slurm 作业。
 
 V1 场站结果及乌镇185 `/work/home/acbw9wpn5k` 下的 V1 气象结果保留只读；不复用其事件结果、不改动其目录或软链接。本轮输入必须通过 V2 实体路径和上游完成证据确认。
 
@@ -27,23 +27,23 @@ V1 场站结果及乌镇185 `/work/home/acbw9wpn5k` 下的 V1 气象结果保留
 
 准备阶段维护中心 `runtime/input_release.json`，格式见 `运行前准备.md`。记录 V2 实体 outputs 根、明确 BCSD_ROOT、模型就绪证据及其 hash、patch manifest hash、land plan 的原始物理路径/大小/mtime。所选模型存在缺输入时记 dependency_blocked，不降级到 V1。接收用户的上游可用性结论，不在登录节点重新扫描气象数组。
 
-8 个 worker 使用干净 `develop-patch-grid`，同一个完整 Git SHA 和相同 Python/NumPy/pandas/xarray/netCDF4 版本。代码仍在各自 home，通过本地 commit/push 后 HTTPS clone 或 `pull --ff-only` 更新；Git SSH key 不作为可持续依赖。私有 HTTPS 无认证时报告认证缺项，不把令牌写进 URL。运行中固定 SHA；不在线编辑 checkout，不强制 reset 脏目录。
+18 个 worker 使用干净 `develop-patch-grid`，同一个完整 Git SHA 和相同 Python/NumPy/pandas/xarray/netCDF4 版本。代码仍在各自 home，通过本地 commit/push 后 HTTPS clone 或 `pull --ff-only` 更新；Git SSH key 不作为可持续依赖。私有 HTTPS 无认证时报告认证缺项，不把令牌写进 URL。运行中固定 SHA；不在线编辑 checkout，不强制 reset 脏目录。
 
 网格基线身份包含真实输入路径、mtime、实现内容摘要和 Git SHA。所有账号读同一个真实 land plan 及同一批 V2 文件；不能复制到各自目录后视为同一输入。跨账号读取基线保留原文件及 sidecar 的物理路径；不复制、搬迁或伪造 sidecar 以绕过身份检查。
 
 ## 目录、权限与作业包
 
-运行前按 `运行前准备.md` 完成：8 个计算账号的 share 实体目录及 home 链接、1500 的 8 个 worker 链接、同一文件系统挂载/ACL/原子 rename/flock 探测。共享链接只是访问入口；读取权限由 ACL/目录权限保证。
+运行前按 `运行前准备.md` 完成：18 个计算账号的 share 实体目录及 home 链接、1500 的 18 个 worker 链接、同一文件系统挂载/ACL/原子 rename/flock 探测。共享链接只是访问入口；读取权限由 ACL/目录权限保证。
 
 科学输出、parts、日志和 job 包在执行账号自己的 share 根；汇总端只存链接、JSON 索引、台账及状态。`df`、inode、实际 quota 按账号检查，不能假定 share 不限额。结果容量还要包含保留 parts。
 
-每个 worker 必须预先生成 **所有模型库存、所有阶段、所有组合** 的同版脚本，manifest 和脚本 hash 在 8 账号一致。聚合账号不必生成可提交作业包。已提交脚本不可变；pilot 后的新 profile 在全部 worker 的新目录重新生成，再用于未提交/可重试 unit。
+每个 worker 必须预先生成 **所有模型库存、所有阶段、所有组合** 的同版脚本，manifest 和脚本 hash 在 18 账号一致。聚合账号不必生成可提交作业包。已提交脚本不可变；pilot 后的新 profile 在全部 worker 的新目录重新生成，再用于未提交/可重试 unit。
 
 脚本统一加载 `EXTREME_ENV_FILE`，climate 激活沿用 `source /work/home/acbpgywfpz/miniconda3/bin/activate climate`；该路径是已存在的共享环境例外。Python 科学计算只能在计算节点。登录节点只做 Git、脚本、轻量状态、JSON/stat、软链接及调度操作。
 
 ## Pilot 和监控间隔
 
-用户确认 GCM 后，从所选范围选择一个代表性非空 patch（默认候选 R03C09/ssp126/solar），在乌镇199先运行 baseline，再运行第一个完整五年 signals 段，不能只用 toy 数据决定生产配置。必要时再补 wind 或大 patch；已成功的正式身份 pilot 计入完成，不重复运行。
+从本轮三个模式选择代表性非空 patch（默认候选 R03C09/ssp126/solar），在乌镇199先运行 baseline，再运行第一个完整五年 signals 段，不能只用 toy 数据决定生产配置。必要时再补 wind 或大 patch；已成功的正式身份 pilot 计入完成，不重复运行。
 
 初始每 15 分钟检查；取得 baseline 和 signals 的实际 `sacct Elapsed` 后，令 T 为两者较长的分钟数：
 
@@ -59,6 +59,12 @@ baseline/signals 初始 8 CPU/4 worker、tile32×32、time_chunk240；audit 2 CP
 
 ## 提交、依赖与重分配
 
+三个账号需核时限额，其余账号不设核时限制。余额以用户给出的 2026-09-24 16:30:00（Asia/Shanghai）为起点：乌镇1872 `acjpoxgsdu` 为96核时，乌镇1850 `acf9hhlwmd` 为277核时，乌镇1555 `ac4wf1cvxp` 为434核时。CANESM5实测全阶段平均约0.408核时/作业；本轮每patch跨三个模式有216个作业。初始分工见 `作业分工/patch_assignment.csv`：三个账号各分得一个实测较轻的patch，不领取其他账号的unit。1872最多提交200个作业（含重试），该patch其余unit改派其他账号；按均值计算200个作业加10核时预留为91.6核时。
+
+每轮监控及这三个账号每次提交前，用各账号 `sacct` 查询从上述起点至当前时刻的所有项目作业。只累计主Job及数组元素，排除 `.batch`、`.extern` 等step和数组汇总行；对每个已分配CPU的作业计算 `AllocCPUS × max(0, min(End, now) − max(Start, 起点)) / 3600`。运行中作业的End按当前时刻计，pending不计消耗；查询覆盖起点前启动但起点后仍运行的作业。记录查询时刻、原始结果和累计核时，核对时区与重复行。`sacct`缺失或不可信时暂停该账号新提交并查明，不把缺失当零。
+
+任何一个限额账号累计核时加10核时超过其上述余额时，在提交锁内标记暂停，此后不再向它提交新作业；提交前还要把在途作业预计剩余核时计入可用量，避免并发作业耗尽余量。该账号已运行作业继续监测至终态，未提交或允许重试的unit改派其他有槽位的账号，保留原logical_owner及权威结果路径；不迁移或取消active作业。
+
 所有项目共享账号的提交应使用同一把锁（本轮候选：1500 share 下 `runtime/.submit.lock`；准备时与并行工作流协调并验证跨账号 flock）。锁内执行：
 
 1. 查权威台账，确认 unit 无 active Job、未成功、模型在 allowlist，依赖已成功。
@@ -68,7 +74,7 @@ baseline/signals 初始 8 CPU/4 worker、tile32×32、time_chunk240；audit 2 CP
 
 提交环境先 export `EXTREME_ENV_FILE`；signals 另外 export 台账权威 `EXTREME_BASELINE_FILE`；audit 另外 export 已完成组合的 `EXTREME_COMBINATION_INDEX`。不要在 sbatch 的 export 逗号字符串中拼复杂路径；导出变量后用 `--export=ALL`。每轮清除不适用的旧阶段变量。
 
-依赖按组合释放，不设“全部基线完成”屏障。同一模型最多160个活跃槽仍要扣除其他项目；不用 Slurm array，不整批等待。初始分工仅用于均衡，同一 stage unit 可分给任何有空槽的 worker。保留 logical_owner，只改 submit_username、assignment_version。不得迁移/取消/复制 active Job。
+依赖按组合释放，不设“全部基线完成”屏障。同一模型最多360个活跃槽仍要扣除其他项目；不用 Slurm array，不整批等待。初始分工仅用于均衡，同一 stage unit 可分给任何有空槽的 worker。保留 logical_owner，只改 submit_username、assignment_version。不得迁移/取消/复制 active Job。
 
 已完成基线保持在原生产账号，其他账号只读。失败 unit 换账号后在新账号自己的 share 重新生成 parts；当前 parts 身份含路径，**不承诺跨账号自动续接旧 parts**。原账号同配置重试可复用有效 parts。已成功的信号段不因后续段重分配而复制或重跑；中心索引记录每个文件实际所在地。
 
