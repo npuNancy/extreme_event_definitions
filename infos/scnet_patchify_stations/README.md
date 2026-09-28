@@ -39,7 +39,7 @@ worker：/work/share/<username>/extreme_grid/stations_v2/
 
 当前全矩阵为 **2,257 个逻辑作业**：prepare 1、extract 1,128、audit 1,128。prepare 将 catalog、网格元数据和 mapping 串行打包，防止共享资产并发写入。每个 extract 顺序处理原有10个时间段，共最多11,280个信号文件；无站点组合写跳过证据。
 
-默认 prepare 为4 CPU/4h，extract 为2 CPU/2h，audit 为2 CPU/1h，均单进程。13账号全项目理论上限260，本任务初始全局并发8；各账号所有项目 active 合计不超过20。初始 logical_owner 轮转分配，运行时按当前槽位动态分配。资源需经 pilot 调整。
+默认 prepare 为4 CPU/4h，extract 为2 CPU/2h，audit 为2 CPU/1h，均单进程。正式运行按用户要求使用13账号共260槽，控制器指定 `--global-active-limit 260`，按账号并行提交并持续补槽；各账号所有项目 active 合计不超过20。初始 logical_owner 轮转分配，运行时按当前槽位动态分配。科学配置与作业包保持冻结，实际调度上限记录在台账中。
 
 本地测试、commit/push 后，在每个 worker 用相同 SHA、campaign 和输入索引生成完整作业包：
 

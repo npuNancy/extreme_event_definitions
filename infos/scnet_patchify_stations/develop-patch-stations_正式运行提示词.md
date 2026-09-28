@@ -20,7 +20,7 @@
 
 五、持续提交和监控
 控制器在1500运行：python3 infos/scnet_patchify_stations/control_loop.py --pack /work/share/acp6varuz3/extreme_grid/stations_v2/runtime/job_pack.json --status-dir /work/share/acp6varuz3/extreme_grid/stations_v2/completion_status。先仅监控初始化并核对台账；提交轮追加 --submit --submit-lock <已验证共享锁>。命令每次执行一轮，Agent须持续安排后续轮次。
-每账号所有项目的pending/running及过渡状态合计最多20，13账号理论上限260；本项目初始全局并发8。调并发用--global-active-limit。按pilot的共享I/O吞吐决定是否扩容，不机械填满260。提交锁内重查全账号队列、依赖、unit claim和脚本身份；sbatch显式使用实际用户名和本账号chdir。submitting/unknown先查证，回执丢失不盲重提；active任务不改派，空闲账号可接未开始或可重试任务。
+每账号所有项目的pending/running及过渡状态合计最多20，13账号理论上限260；本项目全局并发260，以--global-active-limit 260运行。按账号并行提交，持续补满可用槽位，及时释放已完成任务的依赖。提交锁内重查全账号队列、依赖、unit claim和脚本身份；sbatch显式使用实际用户名和本账号chdir。submitting/unknown先查证，回执丢失不盲重提；active任务不改派，空闲账号可接未开始或可重试任务。
 按prepare→extract→audit依赖逐组合释放；prepare成功才发布中心prepared清单。每轮采集squeue、sacct、exit、elapsed、MaxRSS、日志尾及receipt/产物证据，再分类、补槽/重试并记录。离开squeue不是成功，活动任务缺最终文件不是失败。初始15分钟一轮，按实测任务时长调整；等待期间保持回应。
 NODE_FAIL/PREEMPTED最多自动重试2次；OOM/TIMEOUT先查资源和分片耗时；权限、身份、schema、代码问题停止受影响链并修复。不要原配置无限重试，也不自动复活CANCELLED。新尝试写新Job ID目录，完整且身份一致的分片保留原账号并通过清单复用；partial或无sidecar的NC不覆盖。
 
