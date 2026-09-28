@@ -62,7 +62,10 @@ def test_full_four_model_inventory_and_shell(tmp_path):
     index_fixture(tmp_path / "index.json", full=True)
     campaign_fixture(tmp_path / "campaign.json", full=True)
     pack, scripts = jobs.build(tmp_path / "campaign.json", tmp_path / "index.json", "a" * 40)
-    assert len(pack["workers"]) == 14
+    assert len(pack["workers"]) == 13
+    worker_users = {w["username"] for w in pack["workers"]}
+    assert "aczlvkl1ac" not in worker_users
+    assert {r["logical_owner"] for r in pack["jobs"]} == worker_users
     assert pack["aggregator"]["username"] == "acp6varuz3"
     assert pack["campaign"]["aggregate_root"] == "/work/share/acp6varuz3/extreme_grid/stations_v2"
     assert pack["counts"] == {"prepare": 1, "extract": 1128, "audit": 1128}

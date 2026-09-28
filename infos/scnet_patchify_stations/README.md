@@ -2,7 +2,7 @@
 
 已实现场站目录、最近格点映射、原事件的分块抽取、独立审核、分片读取、Slurm 作业生成和单轮提交/监控控制器。输入仅为已完成的 `signals_*.nc` 及元数据。
 
-本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 14 个 worker，1500 仅汇总。当前尚未部署、运行远程 pilot 或提交生产作业。
+本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 13 个 worker，1500 仅汇总。已部署并运行远程 pilot，生产作业尚未提交；实时进度见 completion_status/progress.md。
 
 ```text
 输入：/work/share/acp6varuz3/extreme_grid/grid_v2/
@@ -15,7 +15,7 @@ worker：/work/share/<username>/extreme_grid/stations_v2/
 | 文件 | 用途 |
 |---|---|
 | [campaign.json](campaign.json) | 模式、CSV、路径、资源和并发配置 |
-| [accounts.csv](accounts.csv) | 14 个 worker 和 1 个 aggregator |
+| [accounts.csv](accounts.csv) | 13 个 worker 和 1 个 aggregator |
 | [create_jobs.py](create_jobs.py) | 标准库生成器；仅生成，不提交 |
 | [run_job.py](run_job.py) | 计算节点预检、科学入口、完成 receipt |
 | [control_loop.py](control_loop.py) | 在1500执行一轮监控、可选补槽和最终发布 |
@@ -39,7 +39,7 @@ worker：/work/share/<username>/extreme_grid/stations_v2/
 
 当前全矩阵为 **2,257 个逻辑作业**：prepare 1、extract 1,128、audit 1,128。prepare 将 catalog、网格元数据和 mapping 串行打包，防止共享资产并发写入。每个 extract 顺序处理原有10个时间段，共最多11,280个信号文件；无站点组合写跳过证据。
 
-默认 prepare 为4 CPU/4h，extract 为2 CPU/2h，audit 为2 CPU/1h，均单进程。14账号全项目理论上限280，本任务初始全局并发8；各账号所有项目 active 合计不超过20。初始 logical_owner 轮转分配，运行时按当前槽位动态分配。资源需经 pilot 调整。
+默认 prepare 为4 CPU/4h，extract 为2 CPU/2h，audit 为2 CPU/1h，均单进程。13账号全项目理论上限260，本任务初始全局并发8；各账号所有项目 active 合计不超过20。初始 logical_owner 轮转分配，运行时按当前槽位动态分配。资源需经 pilot 调整。
 
 本地测试、commit/push 后，在每个 worker 用相同 SHA、campaign 和输入索引生成完整作业包：
 
@@ -57,7 +57,7 @@ python3 infos/scnet_patchify_stations/create_jobs.py \
 
 1. worker 能读网格软链接目标、CSV 和准备资产；1500 能读每个 worker 的结果和 job pack。
 2. worker 能读中心 `runtime/ledger.json`、`runtime/prepared.json`。
-3. 1500 上14个 SSH Host alias 可无交互执行调度命令；控制器使用1500的共享挂载。
+3. 1500 上13个 SSH Host alias 可无交互执行调度命令；控制器使用1500的共享挂载。
 4. 代码路径与 campaign 一致；共享 climate 环境可访问。脚本统一激活 `/work/home/acbpgywfpz/miniconda3/bin/activate climate`。
 5. 跨项目共享提交锁已协调并验证跨账号 flock。软链接不授予访问权限。
 

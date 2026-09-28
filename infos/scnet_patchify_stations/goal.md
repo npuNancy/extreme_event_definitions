@@ -2,7 +2,7 @@
 
 ## 范围与终点
 
-输入为 `/work/share/acp6varuz3/extreme_grid/grid_v2/` 的现成事件信号；四模式、三 SSP、47 patch、两技术、2015–2060。发布到 `/work/share/acp6varuz3/extreme_grid/stations_v2/`。只允许 accounts.csv 的14个 worker 运行作业；1500 是汇总和控制账号。每个 worker 写自己的 `/work/share/<username>/extreme_grid/stations_v2/`。
+输入为 `/work/share/acp6varuz3/extreme_grid/grid_v2/` 的现成事件信号；四模式、三 SSP、47 patch、两技术、2015–2060。发布到 `/work/share/acp6varuz3/extreme_grid/stations_v2/`。只允许 accounts.csv 的13个 worker 运行作业；1500 是汇总和控制账号。每个 worker 写自己的 `/work/share/<username>/extreme_grid/stations_v2/`。
 
 终点：prepare 成功；全部1,128组合 extract/audit 成功或有明确空站点跳过证据；所有合法目录站点有覆盖/未覆盖解释；索引、覆盖报告和链接可访问；没有 active、retryable、unknown 或未解决失败。
 
@@ -29,11 +29,11 @@ prepare 串行打包目录/映射，按内容身份复用一致空间组。extra
 
 ## 资源与部署
 
-初始prepare4CPU/4h、extract2CPU/2h、audit2CPU/1h，单进程、库线程为1；分区wzhctest，内存以实测为准。每账号所有项目active≤20，14账号理论上限280；本项目初始全局active≤8。
+初始prepare4CPU/4h、extract2CPU/2h、audit2CPU/1h，单进程、库线程为1；分区wzhctest，内存以实测为准。每账号所有项目active≤20，13账号理论上限260；本项目初始全局active≤8。
 
 本地开发用.venv，生成器用标准库python3；科学作业激活 `source /work/home/acbpgywfpz/miniconda3/bin/activate climate`。先本地测试、commit/push，再远程HTTPS clone或干净fast-forward pull；固定SHA，不重置脏目录，不自动建立Git SSH认证。私有HTTPS无认证时报告缺项。
 
-每worker在自身share生成同一包，预建logs；sbatch明确chdir。部署时验证14个SSH alias、共享挂载、读ACL、worker读取中心台账、1500读取各worker产物、quota、余额和跨账号flock。软链接不授予权限。
+每worker在自身share生成同一包，预建logs；sbatch明确chdir。部署时验证13个SSH alias、共享挂载、读ACL、worker读取中心台账、1500读取各worker产物、quota、余额和跨账号flock。软链接不授予权限。
 
 CSV、网格信号/sidecar及共享准备资产不是Git部署内容。共享挂载直接读取；非共享机器须按分片清单非破坏性传输并验证身份。本控制器要求共享挂载，不隐式复制输入。所有科学准备/抽取/审核只在计算节点执行。
 
