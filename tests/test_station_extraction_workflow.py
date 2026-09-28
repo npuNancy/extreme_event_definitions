@@ -329,3 +329,148 @@ def test_receipt_identity_and_content_hash(tmp_path):
     output.write_text('{"status":"FAILED"}')
     with pytest.raises(ValueError, match="identity/artifact"):
         runner.valid_receipt(row, pack)
+
+
+@pytest.fixture
+def parallel_submission(tmp_path, monkeypatch):
+    index = index_fixture(tmp_path / "index.json")
+    originals = list(index["combinations"].values())
+    for patch in ("P2", "P3"):
+        for original in originals:
+            combination = copy.deepcopy(original)
+            combination["patch"] = patch
+            index["combinations"][ct.combo_key(combination)] = combination
+    ct.atomic_json(tmp_path / "index.json", index)
+    campaign_fixture(tmp_path / "campaign.json")
+    pack, scripts = jobs.build(tmp_path / "campaign.json", tmp_path / "index.json", "a" * 40)
+    pack["workers"] = pack["workers"][:2]
+    config = pack["campaign"]
+    config.update(aggregate_root=str(tmp_path / "center"), worker_root_template=str(tmp_path / "{username}"),
+                  account_active_limit=2, global_active_limit=4)
+    pack.pop("identity")
+    pack["identity"] = ct.fingerprint(pack)
+    queues = {w["username"]: {} for w in pack["workers"]}
+    for user in queues:
+        directory = tmp_path / user / "jobs" / config["resource_profile"]
+        for relative, body in scripts.items():
+            path = directory / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        ct.atomic_json(directory / "manifest.json", pack)
+        (tmp_path / user / "logs").mkdir()
+    ledger = control.initialize(pack)
+    ledger["tasks"][pack["jobs"][0]["task_id"]]["classification"] = "succeeded"
+    ledger_path = Path(config["aggregate_root"]) / "runtime/ledger.json"
+    ct.atomic_json(ledger_path, ledger)
+    monkeypatch.setattr(control.pwd, "getpwuid", lambda _: SimpleNamespace(pw_name="acp6varuz3"))
+    monkeypatch.setattr(control, "queue", lambda w: dict(queues[w["username"]]))
+    monkeypatch.setattr(control, "accounting", lambda *args: {})
+    return pack, queues, ledger_path, (pack, tmp_path / "status", True, str(tmp_path / "shared.lock"))
+
+
+def test_parallel_accounts_persist_claims_and_obey_both_caps(parallel_submission, monkeypatch):
+    import threading
+    pack, queues, ledger_path, args = parallel_submission
+    original = copy.deepcopy(pack)
+    barrier = threading.Barrier(2)
+    mutex = threading.Lock()
+    calls = []
+
+    def submit(worker, argv, limit):
+        stored = ct.read_json(ledger_path)
+        claims = [r for r in stored["tasks"].values() if r["classification"] == "submitting"]
+        assert len(claims) == 2 and len({r["username"] for r in claims}) == 2
+        assert all(r["job_id"] is None and r["attempt"] == 1 for r in claims)
+        with pytest.raises(BlockingIOError):
+            with ct.lock(args[3]):
+                pass
+        barrier.wait(timeout=5)  # Serial submission cannot pass this check.
+        with mutex:
+            user = worker["username"]
+            assert len(queues[user]) < limit == 2
+            job = str(100 + len(calls))
+            queues[user][job] = {"state": "RUNNING", "name": "station"}
+            calls.append(user)
+        return job
+
+    monkeypatch.setattr(control, "guarded_submit", submit)
+    ledger = control.cycle(*args)
+    assert len(calls) == 4 and all(len(q) == 2 for q in queues.values())
+    assert sum(s["classification"] == "active" for s in ledger["tasks"].values()) == 4
+    for row in pack["jobs"]:
+        if row["stage"] == "audit":
+            assert ledger["tasks"][row["task_id"]]["classification"] == "not_submitted"
+    assert pack == original
+
+
+def test_parallel_uncertain_submit_preserves_other_receipt(parallel_submission, monkeypatch):
+    import threading
+    pack, queues, ledger_path, args = parallel_submission
+    barrier = threading.Barrier(2)
+    failing_user = pack["workers"][0]["username"]
+    calls = []
+
+    def submit(worker, argv, limit):
+        calls.append(worker["username"])
+        barrier.wait(timeout=5)
+        if worker["username"] == failing_user:
+            raise subprocess.TimeoutExpired("sbatch", 45)
+        queues[worker["username"]]["12345"] = {"state": "RUNNING", "name": "station"}
+        return "12345"
+
+    monkeypatch.setattr(control, "guarded_submit", submit)
+    ledger = control.cycle(*args, global_active_limit=2)
+    accepted = [r for r in ledger["tasks"].values() if r.get("job_id") == "12345"]
+    unknown = [r for r in ledger["tasks"].values() if r["classification"] == "unknown"]
+    assert len(accepted) == len(unknown) == 1
+    assert accepted[0]["classification"] == "active"
+    assert unknown[0]["username"] == failing_user and unknown[0]["attempt"] == 1
+    assert ct.read_json(ledger_path)["tasks"] == ledger["tasks"]
+    control.cycle(*args, global_active_limit=2)
+    assert len(calls) == 2
+
+
+def test_parallel_preflight_failure_does_not_create_claims(parallel_submission, monkeypatch):
+    pack, queues, ledger_path, args = parallel_submission
+    counts = {user: 0 for user in queues}
+    failing_user = pack["workers"][0]["username"]
+
+    def queue(worker):
+        user = worker["username"]
+        counts[user] += 1
+        if user == failing_user and counts[user] == 2:
+            raise OSError("scheduler preflight unavailable")
+        return dict(queues[user])
+
+    def submit(*args):
+        pytest.fail("preflight failed before any submission")
+
+    monkeypatch.setattr(control, "queue", queue)
+    monkeypatch.setattr(control, "guarded_submit", submit)
+    with pytest.raises(OSError, match="preflight unavailable"):
+        control.cycle(*args)
+    stored = ct.read_json(ledger_path)
+    assert all(r["attempt"] == 0 and r["job_id"] is None for r in stored["tasks"].values())
+
+
+def test_parallel_submission_records_fast_reply_before_slow_peer(parallel_submission, monkeypatch):
+    import time
+    pack, queues, ledger_path, args = parallel_submission
+    slow_user = pack["workers"][0]["username"]
+
+    def submit(worker, argv, limit):
+        user = worker["username"]
+        if user == slow_user:
+            deadline = time.monotonic() + 5
+            while not any(r.get("job_id") == "111" for r in ct.read_json(ledger_path)["tasks"].values()):
+                assert time.monotonic() < deadline, "fast Job ID was withheld until the slow submission completed"
+                time.sleep(0.01)
+            job = "112"
+        else:
+            job = "111"
+        queues[user][job] = {"state": "RUNNING", "name": "station"}
+        return job
+
+    monkeypatch.setattr(control, "guarded_submit", submit)
+    ledger = control.cycle(*args, global_active_limit=2)
+    assert {r["job_id"] for r in ledger["tasks"].values() if r["classification"] == "active"} == {"111", "112"}

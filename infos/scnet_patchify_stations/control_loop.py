@@ -7,7 +7,8 @@ or automatic job submission is started when generating a job pack.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
@@ -208,6 +209,77 @@ def _publish(pack, ledger, center):
     ledger["published_at"] = now()
 
 
+def submit_ready(pack, ledger, ready, snapshots, ledger_path, active_limit):
+    """Submit one claim per account concurrently; only this thread writes the ledger."""
+    config = pack["campaign"]
+    workers = {w["username"]: w for w in pack["workers"]}
+    units = {r["unit_id"]: r["task_id"] for r in pack["jobs"]}
+    pending = deque(r for r in pack["jobs"]
+                    if ledger["tasks"][r["task_id"]]["classification"] in ("not_submitted", "retryable")
+                    and all(ledger["tasks"][units[d]]["classification"] == "succeeded" for d in r["depends_on"]))
+    active = sum(s["classification"] in ("active", "submitting", "unknown") for s in ledger["tasks"].values())
+    with ThreadPoolExecutor(max_workers=max(1, len(ready))) as pool:
+        while pending and active < active_limit:
+            batch, reserved = [], set()
+            while pending and len(batch) < active_limit - active:
+                row = pending[0]
+                eligible = sorted((u for u in ready if u not in reserved),
+                                  key=lambda u: (len(snapshots[u]), u != row["logical_owner"], u))
+                user = next((u for u in eligible if len(snapshots[u]) < config["account_active_limit"]), None)
+                if user is None:
+                    break
+                root = Path(config["worker_root_template"].format(username=user))
+                pack_dir = root / "jobs" / config["resource_profile"]
+                if load_pack(pack_dir / "manifest.json")["identity"] != pack["identity"]:
+                    raise ValueError("worker job pack is missing or differs")
+                script = pack_dir / row["script"]
+                if ct.digest(script) != row["script_sha256"]:
+                    raise ValueError("worker script checksum mismatch")
+                if not (root / "logs").is_dir():
+                    raise ValueError(f"worker logs directory not prepared: {root}")
+                repo = config["repository_template"].format(username=user)
+                argv = ["env", f"STATION_REPO={repo}", f"STATION_JOB_PACK={pack_dir}",
+                        "sbatch", "--parsable", "-A", user, f"--chdir={root}", "--export=ALL", str(script)]
+                batch.append((pending.popleft(), user, argv))
+                reserved.add(user)
+            if not batch:
+                break
+            checks = {pool.submit(queue, workers[user]): user for _, user, _ in batch}
+            for future in as_completed(checks):
+                snapshots[checks[future]] = future.result()
+            batch = [(row, user, argv) for row, user, argv in batch
+                     if len(snapshots[user]) < config["account_active_limit"]]
+            if not batch:
+                continue
+            previous = {}
+            for row, user, _ in batch:
+                state = ledger["tasks"][row["task_id"]]
+                previous[row["task_id"]] = dict(state, history=list(state["history"]))
+                if state.get("job_id"):
+                    state["history"].append({"job_id": state["job_id"], "username": state["username"]})
+                state.update(classification="submitting", username=user, job_id=None, attempt=state["attempt"] + 1,
+                             submitted_at=now(), updated_at=now())
+            ct.atomic_json(ledger_path, ledger)
+            futures = {pool.submit(guarded_submit, workers[user], argv, config["account_active_limit"]): (row, user)
+                       for row, user, argv in batch}
+            for future in as_completed(futures):
+                row, user = futures[future]
+                state = ledger["tasks"][row["task_id"]]
+                try:
+                    answer = future.result()
+                    if answer is None:
+                        state.clear()
+                        state.update(previous[row["task_id"]], reason="account lock busy or slots filled before submission")
+                    else:
+                        state.update(job_id=answer, classification="active", scheduler_state="SUBMITTED")
+                        snapshots[user][answer] = {"state": "SUBMITTED", "name": row["job_name"]}
+                        active += 1
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    state.update(classification="unknown", reason=f"submission uncertain: {exc}")
+                    active += 1
+                ct.atomic_json(ledger_path, ledger)
+
+
 def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=None):
     config = pack["campaign"]
     active_limit = config["global_active_limit"] if global_active_limit is None else global_active_limit
@@ -221,7 +293,6 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
         raise ValueError("--submit requires --submit-lock pointing to the established cross-project shared lock")
     ledger_path = center / "runtime/ledger.json"
     workers = {w["username"]: w for w in pack["workers"]}
-    unit_lookup = {r["unit_id"]: r["task_id"] for r in pack["jobs"]}
     with ct.lock(center / "runtime/.controller.lock"):
         ledger = ct.read_json(ledger_path) if ledger_path.exists() else initialize(pack)
         if ledger["pack_identity"] != pack["identity"]:
@@ -290,56 +361,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
             if submit:
                 ready = ready_workers(pack, ledger, snapshots)
                 with ct.lock(submit_lock):
-                    active = sum(s["classification"] in ("active", "submitting", "unknown") for s in ledger["tasks"].values())
-                    for row in pack["jobs"]:
-                        if active >= active_limit:
-                            break
-                        s = ledger["tasks"][row["task_id"]]
-                        if s["classification"] not in ("not_submitted", "retryable"):
-                            continue
-                        if any(ledger["tasks"][unit_lookup[d]]["classification"] != "succeeded" for d in row["depends_on"]):
-                            continue
-                        eligible = sorted(ready, key=lambda u: (len(snapshots[u]), u != row["logical_owner"], u))
-                        user = next((u for u in eligible if len(snapshots[u]) < config["account_active_limit"]), None)
-                        if user is None:
-                            break
-                        worker = workers[user]
-                        current = queue(worker)  # Account-wide recheck while holding the cross-project lock.
-                        snapshots[user] = current
-                        if len(current) >= config["account_active_limit"]:
-                            continue
-                        root = Path(config["worker_root_template"].format(username=user))
-                        pack_dir = root / "jobs" / config["resource_profile"]
-                        if load_pack(pack_dir / "manifest.json")["identity"] != pack["identity"]:
-                            raise ValueError("worker job pack is missing or differs")
-                        script = pack_dir / row["script"]
-                        if ct.digest(script) != row["script_sha256"]:
-                            raise ValueError("worker script checksum mismatch")
-                        # Directory permissions are established in deployment, not changed by this controller.
-                        if not (root / "logs").is_dir():
-                            raise ValueError(f"worker logs directory not prepared: {root}")
-                        previous_state = dict(s, history=list(s["history"]))
-                        if s.get("job_id"):
-                            s["history"].append({"job_id": s["job_id"], "username": s["username"]})
-                        s.update(classification="submitting", username=user, job_id=None, attempt=s["attempt"] + 1,
-                                 submitted_at=now(), updated_at=now())
-                        ct.atomic_json(ledger_path, ledger)
-                        repo = config["repository_template"].format(username=user)
-                        argv = ["env", f"STATION_REPO={repo}", f"STATION_JOB_PACK={pack_dir}",
-                                "sbatch", "--parsable", "-A", user, f"--chdir={root}", "--export=ALL", str(script)]
-                        try:
-                            answer = guarded_submit(worker, argv, config["account_active_limit"])
-                            if answer is None:
-                                s.clear()
-                                s.update(previous_state, reason="account lock busy or slots filled before submission")
-                                ct.atomic_json(ledger_path, ledger)
-                                continue
-                            s.update(job_id=answer, classification="active", scheduler_state="SUBMITTED")
-                            snapshots[user][answer] = {"state": "SUBMITTED", "name": row["job_name"]}
-                        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                            s.update(classification="unknown", reason=f"submission uncertain: {exc}")
-                        active += 1
-                        ct.atomic_json(ledger_path, ledger)
+                    submit_ready(pack, ledger, ready, snapshots, ledger_path, active_limit)
             if all(s["classification"] == "succeeded" for s in ledger["tasks"].values()) and "published_at" not in ledger:
                 _publish(pack, ledger, center)
         finally:
