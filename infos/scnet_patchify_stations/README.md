@@ -2,7 +2,7 @@
 
 已实现场站目录、最近格点映射、原事件的分块抽取、独立审核、分片读取、Slurm 作业生成和单轮提交/监控控制器。输入仅为已完成的 `signals_*.nc` 及元数据。
 
-本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 13 个 worker，1500 仅汇总。已部署并运行远程 pilot，生产作业尚未提交；实时进度见 completion_status/progress.md。
+本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 13 个 worker，1500 仅汇总。已部署并通过远程 pilot，正式流程已启动；实时进度见 completion_status/progress.md。
 
 ```text
 输入：/work/share/acp6varuz3/extreme_grid/grid_v2/
