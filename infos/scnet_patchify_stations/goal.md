@@ -29,7 +29,7 @@ prepare 串行打包目录/映射，按内容身份复用一致空间组。extra
 
 ## 资源与部署
 
-初始prepare4CPU/4h、extract2CPU/2h、audit2CPU/1h，单进程、库线程为1；分区wzhctest，内存以实测为准。每账号所有项目active≤20，13账号理论上限260；本项目初始全局active≤8。
+初始prepare4CPU/4h、extract2CPU/2h、audit2CPU/1h，单进程、库线程为1；分区wzhctest，内存以实测为准。每账号所有项目active≤20，13账号理论上限260；本项目初始全局active≤8。根据实测可通过控制器 `--global-active-limit` 调整当轮上限，实际值记录在台账submission_policy；科学配置和作业包保持冻结。
 
 本地开发用.venv，生成器用标准库python3；科学作业激活 `source /work/home/acbpgywfpz/miniconda3/bin/activate climate`。先本地测试、commit/push，再远程HTTPS clone或干净fast-forward pull；固定SHA，不重置脏目录，不自动建立Git SSH认证。私有HTTPS无认证时报告缺项。
 

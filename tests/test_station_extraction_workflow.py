@@ -177,6 +177,61 @@ def test_guarded_submit_protocol(monkeypatch):
     assert calls[0][4:] == ["account", "20", "sbatch", "--parsable", "/job.sh"]
 
 
+def test_scheduling_limit_preserves_pack_dependencies_and_account_caps(tmp_path, monkeypatch):
+    index_fixture(tmp_path / "index.json")
+    campaign_fixture(tmp_path / "campaign.json")
+    pack, scripts = jobs.build(tmp_path / "campaign.json", tmp_path / "index.json", "a" * 40)
+    pack["workers"] = pack["workers"][:2]
+    config = pack["campaign"]
+    config.update(aggregate_root=str(tmp_path / "center"), worker_root_template=str(tmp_path / "{username}"),
+                  global_active_limit=1, account_active_limit=1)
+    pack.pop("identity")
+    pack["identity"] = ct.fingerprint(pack)
+    original = copy.deepcopy(pack)
+    queues = {w["username"]: {} for w in pack["workers"]}
+    for user in queues:
+        root = tmp_path / user
+        directory = root / "jobs" / config["resource_profile"]
+        for relative, body in scripts.items():
+            path = directory / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        ct.atomic_json(directory / "manifest.json", pack)
+        (root / "logs").mkdir()
+    ledger = control.initialize(pack)
+    ledger["tasks"][pack["jobs"][0]["task_id"]]["classification"] = "succeeded"
+    ct.atomic_json(Path(config["aggregate_root"]) / "runtime/ledger.json", ledger)
+    monkeypatch.setattr(control.pwd, "getpwuid", lambda _: SimpleNamespace(pw_name="acp6varuz3"))
+    monkeypatch.setattr(control, "queue", lambda w: dict(queues[w["username"]]))
+    monkeypatch.setattr(control, "accounting", lambda *args: {})
+    calls = []
+    def submit(worker, argv, limit):
+        queue = queues[worker["username"]]
+        assert len(queue) < limit == 1
+        job = str(100 + len(calls))
+        queue[job] = {"state": "RUNNING", "name": "station"}
+        calls.append(worker["username"])
+        return job
+    monkeypatch.setattr(control, "guarded_submit", submit)
+    args = (pack, tmp_path / "status", True, str(tmp_path / "shared.lock"))
+    control.cycle(*args)
+    assert len(calls) == 1
+    ledger = control.cycle(*args, global_active_limit=2)
+    assert len(calls) == 2 and len(set(calls)) == 2
+    assert ledger["submission_policy"]["global_active_limit"] == 2
+    for row in pack["jobs"]:
+        if row["stage"] == "audit":
+            assert ledger["tasks"][row["task_id"]]["classification"] == "not_submitted"
+    ledger = control.cycle(*args, global_active_limit=1)
+    assert len(calls) == 2
+    assert sum(s["classification"] == "active" for s in ledger["tasks"].values()) == 2
+    for invalid in (0, -1, 3, True):
+        with pytest.raises(ValueError, match="global active limit"):
+            control.cycle(*args, global_active_limit=invalid)
+    assert pack == original
+    assert not ledger.get("deployment_errors")
+
+
 def test_accounting_keeps_peak_across_steps(monkeypatch):
     raw = ("123|COMPLETED|0:0|00:05:27||pilot|\n"
            "123.batch|COMPLETED|0:0|00:05:27|700M|batch|\n"

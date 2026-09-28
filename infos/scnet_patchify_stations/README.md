@@ -75,6 +75,8 @@ python3 infos/scnet_patchify_stations/control_loop.py \
 
 需要提交时追加 `--submit --submit-lock <各并行项目已共同使用的共享锁文件>`。控制器不猜测锁路径；在锁内重查账号全项目 active 数量、领取任务和保存 sbatch 回执。实际提交还持有执行账号的 `$HOME/.bcsd_submit.lock` 并用 `squeue -r` 重新计数，兼容同账号的BCSD工作流及数组作业。回执丢失记 unknown，查证前不重提。
 
+可用 `--global-active-limit 13` 指定本轮调度上限；默认使用冻结 campaign 的初始值。参数范围为1至账号数×每账号上限，账号锁内重查和依赖校验仍然生效。降低上限只限制后续提交，现有活动作业继续运行。台账的 `submission_policy` 记录实际上限和控制器文件SHA256；科学代码SHA仍由不可变作业包确定。
+
 每次命令一轮，不创建后台服务；初期约15分钟重复，之后按任务时长调整。prepare 成功后发布中心 prepared 清单；extract 成功才释放对应 audit；所有审核成功后发布全局索引。离开 squeue 不等于成功。
 
 中心 `runtime/ledger.json` 为权威台账，status-dir 保存 `ledger.json/progress.md`。本地镜像位于 `infos/scnet_patchify_stations/completion_status/`，已忽略于 Git。

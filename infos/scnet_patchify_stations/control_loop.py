@@ -139,6 +139,7 @@ def progress(pack, ledger, directory):
              "分类计数：" + str(counts), "",
              "账号查询异常：" + str(ledger.get("account_errors", {})), "",
              "部署未就绪：" + str(ledger.get("deployment_errors", {})), "",
+             "本轮全局并发上限：" + str(ledger.get("submission_policy", {}).get("global_active_limit", pack["campaign"]["global_active_limit"])), "",
              "| Unit | Stage | Account | Job | State | Class | Attempt | Evidence | Reason | Next action |",
              "|---|---|---|---|---|---|---:|---|---|---|"]
     for row in pack["jobs"]:
@@ -182,8 +183,12 @@ def _publish(pack, ledger, center):
     ledger["published_at"] = now()
 
 
-def cycle(pack, status_dir, submit=False, submit_lock=None):
+def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=None):
     config = pack["campaign"]
+    active_limit = config["global_active_limit"] if global_active_limit is None else global_active_limit
+    maximum = config["account_active_limit"] * len(pack["workers"])
+    if type(active_limit) is not int or not 1 <= active_limit <= maximum:
+        raise ValueError(f"global active limit must be an integer between 1 and {maximum}")
     center = Path(config["aggregate_root"])
     if pwd.getpwuid(os.getuid()).pw_name != pack["aggregator"]["username"]:
         raise ValueError("run controller on the aggregator account with shared mounts")
@@ -196,6 +201,8 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
         ledger = ct.read_json(ledger_path) if ledger_path.exists() else initialize(pack)
         if ledger["pack_identity"] != pack["identity"]:
             raise ValueError("existing ledger belongs to another immutable job pack")
+        ledger["submission_policy"] = {"global_active_limit": active_limit,
+                                       "controller_sha256": ct.digest(__file__)}
         snapshots, accounts = {}, {}
         for user, worker in workers.items():
             try:
@@ -258,7 +265,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                 with ct.lock(submit_lock):
                     active = sum(s["classification"] in ("active", "submitting", "unknown") for s in ledger["tasks"].values())
                     for row in pack["jobs"]:
-                        if active >= config["global_active_limit"]:
+                        if active >= active_limit:
                             break
                         s = ledger["tasks"][row["task_id"]]
                         if s["classification"] not in ("not_submitted", "retryable"):
@@ -321,8 +328,10 @@ def main(argv=None):
     p.add_argument("--status-dir", default=str(Path(__file__).with_name("completion_status")))
     p.add_argument("--submit", action="store_true")
     p.add_argument("--submit-lock", help="Existing shared lock coordinated across all projects/accounts")
+    p.add_argument("--global-active-limit", type=int,
+                   help="Scheduling limit for this cycle; defaults to the frozen campaign value")
     a = p.parse_args(argv)
-    ledger = cycle(load_pack(a.pack), a.status_dir, a.submit, a.submit_lock)
+    ledger = cycle(load_pack(a.pack), a.status_dir, a.submit, a.submit_lock, a.global_active_limit)
     print(dict(Counter(s["classification"] for s in ledger["tasks"].values())))
 
 
