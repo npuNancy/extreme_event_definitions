@@ -97,6 +97,24 @@ def initialize(pack):
         for r in pack["jobs"]}}
 
 
+def ready_workers(pack, ledger, snapshots):
+    """Keep an unavailable deployment from blocking other accounts' ready work."""
+    config = pack["campaign"]
+    ready = []
+    ledger["deployment_errors"] = {}
+    for user in snapshots:
+        root = Path(config["worker_root_template"].format(username=user))
+        try:
+            if not (root / "logs").is_dir():
+                raise ValueError(f"worker logs directory not prepared: {root}")
+            if load_pack(root / "jobs" / config["resource_profile"] / "manifest.json")["identity"] != pack["identity"]:
+                raise ValueError("worker job pack differs")
+            ready.append(user)
+        except (OSError, ValueError, KeyError) as exc:
+            ledger["deployment_errors"][user] = str(exc)
+    return ready
+
+
 def classify(state, scheduler, receipt_ok, max_retries):
     if scheduler is None or "state" not in scheduler:
         return "unknown"
@@ -118,7 +136,10 @@ def progress(pack, ledger, directory):
     counts = dict(Counter(s["classification"] for s in ledger["tasks"].values()))
     lines = ["# 场站极端事件作业进度", "", f"Last checked: {stamp}", "",
              "Next check: " + (datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(minutes=15)).isoformat(timespec="seconds"), "",
-             "分类计数：" + str(counts), "", "| Unit | Stage | Account | Job | State | Class | Attempt | Evidence | Reason | Next action |",
+             "分类计数：" + str(counts), "",
+             "账号查询异常：" + str(ledger.get("account_errors", {})), "",
+             "部署未就绪：" + str(ledger.get("deployment_errors", {})), "",
+             "| Unit | Stage | Account | Job | State | Class | Attempt | Evidence | Reason | Next action |",
              "|---|---|---|---|---|---|---:|---|---|---|"]
     for row in pack["jobs"]:
         s = ledger["tasks"][row["task_id"]]
@@ -181,6 +202,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                 snapshots[user] = queue(worker)
                 since = (datetime.fromisoformat(ledger["started_at"]) - timedelta(days=1)).date().isoformat()
                 accounts[user] = accounting(worker, since)
+                ledger.setdefault("account_errors", {}).pop(user, None)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 snapshots.pop(user, None)
                 ledger.setdefault("account_errors", {})[user] = str(exc)
@@ -232,6 +254,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                         pass
             ct.atomic_json(ledger_path, ledger)
             if submit:
+                ready = ready_workers(pack, ledger, snapshots)
                 with ct.lock(submit_lock):
                     active = sum(s["classification"] in ("active", "submitting", "unknown") for s in ledger["tasks"].values())
                     for row in pack["jobs"]:
@@ -242,7 +265,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                             continue
                         if any(ledger["tasks"][unit_lookup[d]]["classification"] != "succeeded" for d in row["depends_on"]):
                             continue
-                        eligible = sorted(snapshots, key=lambda u: (len(snapshots[u]), u != row["logical_owner"], u))
+                        eligible = sorted(ready, key=lambda u: (len(snapshots[u]), u != row["logical_owner"], u))
                         user = next((u for u in eligible if len(snapshots[u]) < config["account_active_limit"]), None)
                         if user is None:
                             break

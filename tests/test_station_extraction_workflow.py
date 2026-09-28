@@ -184,6 +184,19 @@ def test_accounting_keeps_peak_across_steps(monkeypatch):
     assert result["123"]["state"] == "COMPLETED"
 
 
+def test_unprepared_worker_does_not_block_other_accounts(tmp_path):
+    pack = {"campaign": {"worker_root_template": str(tmp_path / "{username}"), "resource_profile": "v1"}, "jobs": []}
+    pack["identity"] = ct.fingerprint(pack)
+    root = tmp_path / "ready"
+    (root / "logs").mkdir(parents=True)
+    ct.atomic_json(root / "jobs/v1/manifest.json", pack)
+    ledger = {}
+    snapshots = {"unavailable": {}, "ready": {}}
+    assert control.ready_workers(pack, ledger, snapshots) == ["ready"]
+    assert set(ledger["deployment_errors"]) == {"unavailable"}
+    assert set(snapshots) == {"unavailable", "ready"}  # Continue monitoring active jobs on both accounts.
+
+
 def test_lock_excludes_concurrent_writer(tmp_path):
     with ct.lock(tmp_path / "lock"):
         with pytest.raises(BlockingIOError):
