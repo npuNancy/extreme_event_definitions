@@ -33,13 +33,35 @@ def remote(host, argv):
 
 
 def queue(worker):
-    lines = remote(worker["host"], ["squeue", "-h", "-u", worker["username"], "-o", "%i|%T|%j"]).splitlines()
+    lines = remote(worker["host"], ["squeue", "-r", "-h", "-u", worker["username"], "-o", "%i|%T|%j"]).splitlines()
     result = {}
     for line in lines:
         if line.strip():
             job, state, name = line.strip().split("|", 2)
             result[job] = {"state": state, "name": name}
     return result
+
+
+def guarded_submit(worker, argv, limit):
+    """Share the account's BCSD lock as well as the controller's global lock."""
+    script = '''set -euo pipefail
+test "$(id -un)" = "$1"
+exec 9>"$HOME/.bcsd_submit.lock"
+if ! flock -x -w 5 9; then printf 'STATION_NO_SLOT\\n'; exit 0; fi
+queue=$(squeue -r -h -u "$1" -o '%i')
+count=$(printf '%s\\n' "$queue" | awk 'NF {n++} END {print n+0}')
+if [ "$count" -ge "$2" ]; then printf 'STATION_NO_SLOT\\n'; exit 0; fi
+shift 2
+exec "$@"
+'''
+    answer = remote(worker["host"], ["bash", "-c", script, "station-submit",
+                                     worker["username"], str(limit), *argv]).strip()
+    if answer == "STATION_NO_SLOT":
+        return None
+    job = answer.split(";")[0]
+    if not job.isdigit():
+        raise ValueError("unrecognized sbatch response")
+    return job
 
 
 def accounting(worker, since):
@@ -86,6 +108,7 @@ def progress(pack, ledger, directory):
     stamp = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
     counts = dict(Counter(s["classification"] for s in ledger["tasks"].values()))
     lines = ["# 场站极端事件作业进度", "", f"Last checked: {stamp}", "",
+             "Next check: " + (datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(minutes=15)).isoformat(timespec="seconds"), "",
              "分类计数：" + str(counts), "", "| Unit | Stage | Account | Job | State | Class | Attempt | Evidence | Reason | Next action |",
              "|---|---|---|---|---|---|---:|---|---|---|"]
     for row in pack["jobs"]:
@@ -229,6 +252,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                         # Directory permissions are established in deployment, not changed by this controller.
                         if not (root / "logs").is_dir():
                             raise ValueError(f"worker logs directory not prepared: {root}")
+                        previous_state = dict(s, history=list(s["history"]))
                         if s.get("job_id"):
                             s["history"].append({"job_id": s["job_id"], "username": s["username"]})
                         s.update(classification="submitting", username=user, job_id=None, attempt=s["attempt"] + 1,
@@ -238,9 +262,12 @@ def cycle(pack, status_dir, submit=False, submit_lock=None):
                         argv = ["env", f"STATION_REPO={repo}", f"STATION_JOB_PACK={pack_dir}",
                                 "sbatch", "--parsable", "-A", user, f"--chdir={root}", "--export=ALL", str(script)]
                         try:
-                            answer = remote(worker["host"], argv).strip().split(";")[0]
-                            if not answer.isdigit():
-                                raise ValueError("unrecognized sbatch response")
+                            answer = guarded_submit(worker, argv, config["account_active_limit"])
+                            if answer is None:
+                                s.clear()
+                                s.update(previous_state, reason="account lock busy or slots filled before submission")
+                                ct.atomic_json(ledger_path, ledger)
+                                continue
                             s.update(job_id=answer, classification="active", scheduler_state="SUBMITTED")
                             snapshots[user][answer] = {"state": "SUBMITTED", "name": row["job_name"]}
                         except (OSError, ValueError, subprocess.SubprocessError) as exc:

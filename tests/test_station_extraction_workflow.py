@@ -146,6 +146,12 @@ def test_account_cap_claim_and_unknown_submission(tmp_path, monkeypatch):
     assert not calls
     assert (status / "progress.md").exists()
     queue.pop("19")
+    monkeypatch.setattr(control, "remote", lambda *args: "STATION_NO_SLOT\n")
+    ledger = control.cycle(pack, status, submit=True, submit_lock=lock)
+    first = ledger["tasks"][pack["jobs"][0]["task_id"]]
+    assert first["classification"] == "not_submitted" and first["attempt"] == 0
+    assert first["job_id"] is None
+    monkeypatch.setattr(control, "remote", remote)
     ledger = control.cycle(pack, status, submit=True, submit_lock=lock)
     assert len(calls) == 1
     first = ledger["tasks"][pack["jobs"][0]["task_id"]]
@@ -153,6 +159,19 @@ def test_account_cap_claim_and_unknown_submission(tmp_path, monkeypatch):
     control.cycle(pack, status, submit=True, submit_lock=lock)
     assert len(calls) == 1  # Lost submission receipt must never cause blind duplicate submission.
     assert all(s["attempt"] == 0 for k, s in ledger["tasks"].items() if k != first["task_id"])
+
+
+def test_guarded_submit_protocol(monkeypatch):
+    calls = []
+    def remote(host, argv):
+        calls.append(argv)
+        subprocess.run(["bash", "-n"], input=argv[2], text=True, check=True)
+        return "12345;cluster\n"
+    monkeypatch.setattr(control, "remote", remote)
+    worker = {"host": "worker", "username": "account"}
+    assert control.guarded_submit(worker, ["sbatch", "--parsable", "/job.sh"], 20) == "12345"
+    assert '.bcsd_submit.lock' in calls[0][2] and 'squeue -r' in calls[0][2]
+    assert calls[0][4:] == ["account", "20", "sbatch", "--parsable", "/job.sh"]
 
 
 def test_lock_excludes_concurrent_writer(tmp_path):

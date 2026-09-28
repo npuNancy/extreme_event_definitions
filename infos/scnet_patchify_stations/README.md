@@ -23,6 +23,7 @@ worker：/work/share/<username>/extreme_grid/stations_v2/
 | [正式运行提示词](develop-patch-stations_正式运行提示词.md) | CodingAgent 使用 Goal 持续部署、提交、监控和验收的提示词 |
 | [实施方案.md](实施方案.md) | 科学口径和设计依据；实际 CLI 以本文为准 |
 | [输入核查记录.md](输入核查记录.md) | 输入样本和场站统计 |
+| [运行记录.md](运行记录.md) | 部署实测、访问条件和运行问题 |
 
 科学代码在 `grid_extreme_signals/station_{contract,catalog,mapping,extract,pipeline,reader}.py`；直接入口为 `scripts/prepare_station_extraction.py` 和 `scripts/extract_station_events.py`。
 
@@ -72,7 +73,7 @@ python3 infos/scnet_patchify_stations/control_loop.py \
   --status-dir /work/share/acp6varuz3/extreme_grid/stations_v2/completion_status
 ```
 
-需要提交时追加 `--submit --submit-lock <各并行项目已共同使用的共享锁文件>`。控制器不猜测锁路径；在锁内重查账号全项目 active 数量、领取任务和保存 sbatch 回执。回执丢失记 unknown，查证前不重提。
+需要提交时追加 `--submit --submit-lock <各并行项目已共同使用的共享锁文件>`。控制器不猜测锁路径；在锁内重查账号全项目 active 数量、领取任务和保存 sbatch 回执。实际提交还持有执行账号的 `$HOME/.bcsd_submit.lock` 并用 `squeue -r` 重新计数，兼容同账号的BCSD工作流及数组作业。回执丢失记 unknown，查证前不重提。
 
 每次命令一轮，不创建后台服务；初期约15分钟重复，之后按任务时长调整。prepare 成功后发布中心 prepared 清单；extract 成功才释放对应 audit；所有审核成功后发布全局索引。离开 squeue 不等于成功。
 
