@@ -118,6 +118,7 @@ def publish(prepared, audits, root):
              "release": prepared["release"], "catalogs": prepared["catalogs"],
              "mappings": prepared["mappings"], "combinations": {}}
     coverage = []
+    group_totals = defaultdict(lambda: {"completed_combinations": 0, "empty_combinations": 0, "events": {}})
     for key, audit_path in sorted(audits.items()):
         result = ct.read_json(audit_path)
         c = prepared["combinations"][key]
@@ -125,9 +126,16 @@ def publish(prepared, audits, root):
             raise ValueError("invalid audit identity/status")
         if result["mapping_identity"] != c["mapping_identity"]:
             raise ValueError("audit mapping identity mismatch")
+        totals = group_totals[(c["model"], c["scenario"], c["tech"])]
+        totals["completed_combinations"] += 1
+        totals["empty_combinations"] += result["status"] == "SKIPPED_NO_STATIONS"
         for r in result["outputs"]:
             if not ct.completed(r["artifact"]["path"], r["identity"]):
                 raise ValueError("published output changed after audit")
+            for event, stats in r["statistics"].items():
+                target = totals["events"].setdefault(event, dict(event_count=0, valid_count=0, missing_count=0))
+                for field in target:
+                    target[field] += stats[field]
         index["combinations"][key] = {"audit": ct.file_stat(audit_path), "status": result["status"],
                                       "outputs": result["outputs"], "mapping_identity": c["mapping_identity"]}
     seen = set()
@@ -140,8 +148,22 @@ def publish(prepared, audits, root):
         verify_mapping(m)
         if sum(m["counts"].values()) != m["catalog"]["count"]:
             raise ValueError("station conservation failed")
-        coverage.append(dict(zip(("model", "scenario", "tech"), group), **m["counts"],
-                             station_count=m["catalog"]["count"], cross_patch_count=m["cross_patch_count"]))
+        totals = group_totals[group]
+        distances = m["distance_counts"]
+        summary = dict(zip(("model", "scenario", "tech"), group), **m["counts"],
+                       station_count=m["catalog"]["count"], cross_patch_count=m["cross_patch_count"],
+                       ssp_source_rows=prepared["catalogs"][c["scenario"]]["raw_rows"],
+                       completed_combinations=totals["completed_combinations"], empty_combinations=totals["empty_combinations"],
+                       distance_exact=distances["exact"],
+                       distance_within_half_cell_nonexact=distances["within_half_cell"] - distances["exact"],
+                       distance_beyond_half_cell=distances["beyond_half_cell"],
+                       matched_station_fraction=m["counts"]["MATCHED"] / m["catalog"]["count"] if m["catalog"]["count"] else None)
+        for event, stats in sorted(totals["events"].items()):
+            summary.update({event + "_" + field: count for field, count in stats.items()})
+            total = stats["valid_count"] + stats["missing_count"]
+            summary[event + "_valid_fraction_in_outputs"] = stats["valid_count"] / total if total else None
+            summary[event + "_missing_fraction_in_outputs"] = stats["missing_count"] / total if total else None
+        coverage.append(summary)
     import pandas as pd
     root = Path(root)
     write_csv(pd.DataFrame(coverage), root / "runtime/coverage_summary.csv.gz")

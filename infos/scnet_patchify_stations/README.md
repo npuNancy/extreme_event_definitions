@@ -105,6 +105,8 @@ aggregate-root/
 
 大文件保留在实际 worker；catalog/mapping 的物理路径从 prepared/index 获取。每次重试用新的 Job ID 目录，复用失败包中已完成且身份一致的分片。NC 存在但没有有效 sidecar 时不覆盖。节点失败/抢占最多自动重试两次；OOM、超时、代码/权限/身份错误需调整配置或修复原因。
 
+`coverage_summary.csv.gz` 按 model/SSP/tech 汇总源CSV行数、站点数、空间状态、互斥距离分箱、跨patch数、完成及空组合数，以及各事件计数。`matched_station_fraction` 的分母是完整场站目录；事件 `*_fraction_in_outputs` 的分母是已输出的时间×站点单元，不包含没有来源文件的场站。两种比例分别表达空间覆盖与输出内缺测，不能混用。
+
 ## 直接接口与读取
 
 独立准备入口：`python scripts/prepare_station_extraction.py --campaign <json> --shared-root <共享资产目录> --code-sha <SHA>`。

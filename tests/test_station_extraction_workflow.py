@@ -174,6 +174,16 @@ def test_guarded_submit_protocol(monkeypatch):
     assert calls[0][4:] == ["account", "20", "sbatch", "--parsable", "/job.sh"]
 
 
+def test_accounting_keeps_peak_across_steps(monkeypatch):
+    raw = ("123|COMPLETED|0:0|00:05:27||pilot|\n"
+           "123.batch|COMPLETED|0:0|00:05:27|700M|batch|\n"
+           "123.extern|COMPLETED|0:0|00:05:27|2516K|extern|\n")
+    monkeypatch.setattr(control, "remote", lambda *args: raw)
+    result = control.accounting({"host": "worker", "username": "account"}, "2026-09-28")
+    assert result["123"]["step_max_rss"] == "700M"
+    assert result["123"]["state"] == "COMPLETED"
+
+
 def test_lock_excludes_concurrent_writer(tmp_path):
     with ct.lock(tmp_path / "lock"):
         with pytest.raises(BlockingIOError):

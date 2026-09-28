@@ -100,6 +100,13 @@ def test_full_pipeline_three_states_and_reader(tmp_path, calendar, descending, t
         audit(prepared, key, result, path)
         audit_paths[key] = str(path)
     index = publish(prepared, audit_paths, tmp_path / "published")
+    coverage = pd.read_csv(tmp_path / "published/runtime/coverage_summary.csv.gz").iloc[0]
+    assert coverage.ssp_source_rows == 6 and coverage.station_count == 5
+    assert coverage.completed_combinations == 2 and coverage.empty_combinations == 0
+    assert coverage.matched_station_fraction == pytest.approx(3 / 5)
+    assert coverage.distance_exact + coverage.distance_within_half_cell_nonexact + coverage.distance_beyond_half_cell == 5
+    assert coverage.signal_icing_valid_count + coverage.signal_icing_missing_count == 16
+    assert coverage.signal_icing_valid_fraction_in_outputs + coverage.signal_icing_missing_fraction_in_outputs == pytest.approx(1)
     wanted = [station_id("ssp126", tech, 170., 0.), station_id("ssp126", tech, 179.9, 0.)]
     with open_station_signals(index, "CANESM5", "ssp126", tech, wanted) as ds:
         assert ds.sizes == {"time": 4, "station": 2}

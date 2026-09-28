@@ -74,11 +74,20 @@ def accounting(worker, since):
             job, state, exit_code, elapsed, rss, name = fields[:6]
             if "." in job:
                 parent = job.split(".")[0]
-                result.setdefault(parent, {})["step_max_rss"] = rss or result.get(parent, {}).get("step_max_rss", "")
+                previous = result.setdefault(parent, {}).get("step_max_rss", "")
+                if rss_bytes(rss) >= rss_bytes(previous):
+                    result[parent]["step_max_rss"] = rss
                 continue
             result.setdefault(job, {}).update(state=state.split()[0].rstrip("+"), exit_code=exit_code,
                                                elapsed=elapsed, max_rss=rss, name=name)
     return result
+
+
+def rss_bytes(value):
+    if not value:
+        return 0
+    suffix = value[-1].upper()
+    return float(value[:-1]) * 1024 ** ("KMGTP".index(suffix) + 1) if suffix in "KMGTP" else float(value)
 
 
 def initialize(pack):
