@@ -1,0 +1,28 @@
+{
+  "run_id": "stations_v2",
+  "models": ["CANESM5", "MPI-ESM1-2-HR", "MRI-ESM2-0", "BCC-CSM2-MR"],
+  "analysis_years": "2015-2060",
+  "input_index": "/work/share/acp6varuz3/extreme_grid/grid_v2/runtime/authoritative_index.json",
+  "patch_manifest": "/work/share/acp6varuz3/extreme_grid/grid_v2/runtime/patch_manifest.json",
+  "stations": {
+    "ssp126": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP1-2.6.csv",
+    "ssp245": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP2-4.5.csv",
+    "ssp585": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP5-6.0.csv"
+  },
+  "aggregate_root": "/work/share/acp6varuz3/extreme_grid/stations_v2",
+  "worker_root_template": "/work/share/{username}/extreme_grid/stations_v2",
+  "repository_template": "/work/home/{username}/project_climate/repos/extreme_event_definitions",
+  "accounts_file": "accounts.csv",
+  "max_distance_deg": 0.15,
+  "account_active_limit": 20,
+  "global_active_limit": 8,
+  "max_retries": 2,
+  "partition": "wzhctest",
+  "resource_profile": "stations_v2_pilot_v1",
+  "resources": {
+    "prepare": {"cpus": 4, "time": "04:00:00"},
+    "extract": {"cpus": 2, "time": "02:00:00"},
+    "audit": {"cpus": 2, "time": "01:00:00"}
+  },
+  "extraction": {"time_chunk": 240, "station_chunk": 256, "complevel": 1}
+}
