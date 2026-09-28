@@ -242,6 +242,21 @@ def test_accounting_keeps_peak_across_steps(monkeypatch):
     assert result["123"]["state"] == "COMPLETED"
 
 
+def test_startup_io_retry_requires_absent_attempt_and_has_one_retry(tmp_path):
+    state = {"classification": "deterministic_failure", "scheduler_state": "FAILED", "exit_code": "1:0",
+             "attempt": 1, "task_id": "task", "job_id": "123",
+             "log_tail": 'ledger = ct.read_json(center / "runtime/ledger.json")\nOSError: [Errno 5] Input/output error\n'}
+    assert control.retryable_startup_io(state, tmp_path, 2)
+    assert not control.retryable_startup_io(state, tmp_path, 0)
+    for changes in ({"attempt": 2}, {"classification": "unknown"}, {"scheduler_state": "CANCELLED"},
+                    {"exit_code": "0:9"}, {"log_tail": "OSError: [Errno 5] Input/output error"},
+                    {"log_tail": state["log_tail"] + "ValueError: different terminal failure"}):
+        assert not control.retryable_startup_io(dict(state, **changes), tmp_path, 2)
+    attempt = tmp_path / "attempts/task/123"
+    attempt.mkdir(parents=True)
+    assert not control.retryable_startup_io(state, tmp_path, 2)
+
+
 def test_unprepared_worker_does_not_block_other_accounts(tmp_path):
     pack = {"campaign": {"worker_root_template": str(tmp_path / "{username}"), "resource_profile": "v1"}, "jobs": []}
     pack["identity"] = ct.fingerprint(pack)

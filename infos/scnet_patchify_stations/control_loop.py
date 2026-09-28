@@ -130,6 +130,22 @@ def classify(state, scheduler, receipt_ok, max_retries):
     return "unknown"
 
 
+def retryable_startup_io(state, root, max_retries):
+    tail = state.get("log_tail", "").rstrip()
+    if (state["classification"] != "deterministic_failure" or state.get("scheduler_state") != "FAILED"
+            or state.get("exit_code") != "1:0" or not 0 < state["attempt"] <= min(1, max_retries)
+            or 'ledger = ct.read_json(center / "runtime/ledger.json")' not in tail
+            or not tail.endswith("OSError: [Errno 5] Input/output error")):
+        return False
+    try:
+        (Path(root) / "attempts" / state["task_id"] / state["job_id"]).stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def progress(pack, ledger, directory):
     from zoneinfo import ZoneInfo
     stamp = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
@@ -259,6 +275,8 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
                             s["log_tail"] = stream.read().decode(errors="replace")
                     except OSError:
                         pass
+                    if retryable_startup_io(s, root, config["max_retries"]):
+                        s.update(classification="retryable", reason="startup ledger read EIO; one retry before any output")
             ct.atomic_json(ledger_path, ledger)
             if submit:
                 ready = ready_workers(pack, ledger, snapshots)
