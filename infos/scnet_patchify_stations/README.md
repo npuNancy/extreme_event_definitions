@@ -2,13 +2,17 @@
 
 已实现场站目录、最近格点映射、原事件的分块抽取、独立审核、分片读取、Slurm 作业生成和单轮提交/监控控制器。输入仅为已完成的 `signals_*.nc` 及元数据。
 
-本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 13 个 worker，1500 仅汇总。已部署并通过远程 pilot，正式流程已启动；实时进度见 completion_status/progress.md。
+本轮四模式为 `CANESM5 / MPI-ESM1-2-HR / MRI-ESM2-0 / BCC-CSM2-MR`，三 SSP、两技术、2015–2060；使用 13 个 worker，1500 仅汇总。2026-09-28已完成全部2,257个逻辑任务、独立发布验收及48项真实读取验证；四模式各564/564，另有公共prepare 1/1。完整证据见[运行记录](运行记录.md)。
 
 ```text
 输入：/work/share/acp6varuz3/extreme_grid/grid_v2/
 汇总：/work/share/acp6varuz3/extreme_grid/stations_v2/
 worker：/work/share/<username>/extreme_grid/stations_v2/
 ```
+
+发布结果为8,640个NC分片，264个空站点组合保留跳过证据。有效网格匹配率为99.4924%，其余8,154条域外目录记录保留覆盖状态和缺测。中心入口为`runtime/authoritative_index.json`，覆盖汇总为`runtime/coverage_summary.csv.gz`；大文件留在各worker原位。
+
+正式运行使用中心`runtime/production_campaign.json`及`stations_v2_production_v1`资源profile；仓库`campaign.json`为生成模板。
 
 ## 文件
 
@@ -68,14 +72,15 @@ python3 infos/scnet_patchify_stations/create_jobs.py \
 在1500运行仅监控模式，初始化并更新台账，不提交：
 
 ```bash
-python3 infos/scnet_patchify_stations/control_loop.py \
+/work/home/acbpgywfpz/miniconda3/envs/climate/bin/python infos/scnet_patchify_stations/control_loop.py \
   --pack /work/share/acp6varuz3/extreme_grid/stations_v2/runtime/job_pack.json \
-  --status-dir /work/share/acp6varuz3/extreme_grid/stations_v2/completion_status
+  --status-dir /work/share/acp6varuz3/extreme_grid/stations_v2/completion_status \
+  --global-active-limit 260
 ```
 
 需要提交时追加 `--submit --submit-lock <各并行项目已共同使用的共享锁文件>`。控制器不猜测锁路径；在锁内重查账号全项目 active 数量、领取任务和保存 sbatch 回执。实际提交还持有执行账号的 `$HOME/.bcsd_submit.lock` 并用 `squeue -r` 重新计数，兼容同账号的BCSD工作流及数组作业。回执丢失记 unknown，查证前不重提。
 
-可用 `--global-active-limit 13` 指定本轮调度上限；默认使用冻结 campaign 的初始值。参数范围为1至账号数×每账号上限，账号锁内重查和依赖校验仍然生效。降低上限只限制后续提交，现有活动作业继续运行。台账的 `submission_policy` 记录实际上限和控制器文件SHA256；科学代码SHA仍由不可变作业包确定。
+本轮使用 `--global-active-limit 260` 指定调度上限；省略参数时使用冻结 campaign 的初始值。参数范围为1至账号数×每账号上限，账号锁内重查和依赖校验仍然生效。降低上限只限制后续提交，现有活动作业继续运行。台账的 `submission_policy` 记录实际上限和控制器文件SHA256；科学代码SHA仍由不可变作业包确定。
 
 每次命令一轮，不创建后台服务；初期约15分钟重复，之后按任务时长调整。prepare 成功后发布中心 prepared 清单；extract 成功才释放对应 audit；所有审核成功后发布全局索引。离开 squeue 不等于成功。
 
@@ -93,7 +98,7 @@ worker-root/
   attempts/<task-id>/<job-id>/extraction.json     # 整个抽取包的结果
   attempts/<task-id>/<job-id>/audit.json
   runtime/receipts/<task-id>/<job-id>.json
-  jobs/stations_v2_pilot_v1/
+  jobs/<resource_profile>/
   logs/
 
 aggregate-root/
@@ -102,6 +107,8 @@ aggregate-root/
   runtime/prepared.json
   runtime/authoritative_index.json
   runtime/coverage_summary.csv.gz
+  runtime/final_acceptance.json
+  runtime/validation/reader_job.json
   outputs/<model>/<ssp>/<source_patch>/<tech>/*  # 权威结果软链接
 ```
 
