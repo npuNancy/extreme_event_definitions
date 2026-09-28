@@ -474,3 +474,49 @@ def test_parallel_submission_records_fast_reply_before_slow_peer(parallel_submis
     monkeypatch.setattr(control, "guarded_submit", submit)
     ledger = control.cycle(*args, global_active_limit=2)
     assert {r["job_id"] for r in ledger["tasks"].values() if r["classification"] == "active"} == {"111", "112"}
+
+
+def test_ledger_replacement_retains_reader_inode(tmp_path):
+    path = tmp_path / "runtime/ledger.json"
+    control.write_ledger(path, {"version": 0})
+    with path.open() as reader:
+        import os
+        old_inode = os.fstat(reader.fileno()).st_ino
+        control.write_ledger(path, {"version": 1})
+        assert ct.read_json(path) == {"version": 1}
+        assert path.stat().st_ino != old_inode
+        retained = list((path.parent / "ledger_history").glob("ledger-*.json"))
+        assert len(retained) == 1 and retained[0].stat().st_ino == old_inode
+        assert os.fstat(reader.fileno()).st_nlink == 1
+        assert json.load(reader) == {"version": 0}
+
+
+def test_ledger_history_is_bounded_and_preserves_other_files(tmp_path):
+    path = tmp_path / "ledger.json"
+    history = tmp_path / "ledger_history"
+    history.mkdir()
+    other = history / "ledger-notes.json"
+    other.write_text("keep")
+    for version in range(132):
+        control.write_ledger(path, {"version": version})
+    assert ct.read_json(path) == {"version": 131}
+    retained = sorted(p for p in history.iterdir() if p != other)
+    assert len(retained) == 128
+    assert [ct.read_json(p)["version"] for p in retained] == list(range(3, 131))
+    assert other.read_text() == "keep"
+
+
+def test_failed_ledger_write_preserves_current_and_retained_inode(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.json"
+    control.write_ledger(path, {"version": 0})
+    original_inode = path.stat().st_ino
+
+    def fail(*args):
+        raise OSError("temporary write failed")
+
+    monkeypatch.setattr(control.ct, "atomic_json", fail)
+    with pytest.raises(OSError, match="temporary write failed"):
+        control.write_ledger(path, {"version": 1})
+    assert path.stat().st_ino == original_inode and ct.read_json(path) == {"version": 0}
+    retained = list((tmp_path / "ledger_history").glob("ledger-*.json"))
+    assert len(retained) == 1 and retained[0].stat().st_ino == original_inode

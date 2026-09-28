@@ -13,9 +13,12 @@ from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 import pwd
+import re
 import shlex
 import subprocess
 import sys
+import time
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -209,6 +212,21 @@ def _publish(pack, ledger, center):
     ledger["published_at"] = now()
 
 
+def write_ledger(path, ledger):
+    """Keep recent ledger inodes linked while other nodes finish reading them."""
+    path = Path(path)
+    history = path.parent / "ledger_history"
+    history.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        retained = history / f"ledger-{time.time_ns():020d}-{uuid.uuid4().hex}.json"
+        os.link(path, retained)
+    ct.atomic_json(path, ledger)
+    retained = sorted(p for p in history.glob("ledger-*.json")
+                      if re.fullmatch(r"ledger-\d{20}-[0-9a-f]{32}\.json", p.name))
+    for old in retained[:-128]:
+        old.unlink()
+
+
 def submit_ready(pack, ledger, ready, snapshots, ledger_path, active_limit):
     """Submit one claim per account concurrently; only this thread writes the ledger."""
     config = pack["campaign"]
@@ -259,7 +277,7 @@ def submit_ready(pack, ledger, ready, snapshots, ledger_path, active_limit):
                     state["history"].append({"job_id": state["job_id"], "username": state["username"]})
                 state.update(classification="submitting", username=user, job_id=None, attempt=state["attempt"] + 1,
                              submitted_at=now(), updated_at=now())
-            ct.atomic_json(ledger_path, ledger)
+            write_ledger(ledger_path, ledger)
             futures = {pool.submit(guarded_submit, workers[user], argv, config["account_active_limit"]): (row, user)
                        for row, user, argv in batch}
             for future in as_completed(futures):
@@ -277,7 +295,7 @@ def submit_ready(pack, ledger, ready, snapshots, ledger_path, active_limit):
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     state.update(classification="unknown", reason=f"submission uncertain: {exc}")
                     active += 1
-                ct.atomic_json(ledger_path, ledger)
+                write_ledger(ledger_path, ledger)
 
 
 def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=None):
@@ -357,7 +375,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
                         pass
                     if retryable_startup_io(s, root, config["max_retries"], ledger_path):
                         s.update(classification="retryable", reason="startup ledger unavailable; one retry before any output")
-            ct.atomic_json(ledger_path, ledger)
+            write_ledger(ledger_path, ledger)
             if submit:
                 ready = ready_workers(pack, ledger, snapshots)
                 with ct.lock(submit_lock):
@@ -366,7 +384,7 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
                 _publish(pack, ledger, center)
         finally:
             ledger["checked_at"] = now()
-            ct.atomic_json(ledger_path, ledger)
+            write_ledger(ledger_path, ledger)
             progress(pack, ledger, status_dir)
         return ledger
 
