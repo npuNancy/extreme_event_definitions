@@ -130,12 +130,19 @@ def classify(state, scheduler, receipt_ok, max_retries):
     return "unknown"
 
 
-def retryable_startup_io(state, root, max_retries):
+def retryable_startup_io(state, root, max_retries, ledger_path):
     tail = state.get("log_tail", "").rstrip()
+    errors = ("OSError: [Errno 5] Input/output error",
+              f"FileNotFoundError: [Errno 2] No such file or directory: {str(ledger_path)!r}")
     if (state["classification"] != "deterministic_failure" or state.get("scheduler_state") != "FAILED"
             or state.get("exit_code") != "1:0" or not 0 < state["attempt"] <= min(1, max_retries)
             or 'ledger = ct.read_json(center / "runtime/ledger.json")' not in tail
-            or not tail.endswith("OSError: [Errno 5] Input/output error")):
+            or not tail.endswith(errors)):
+        return False
+    try:
+        if not Path(ledger_path).is_file():
+            return False
+    except OSError:
         return False
     try:
         (Path(root) / "attempts" / state["task_id"] / state["job_id"]).stat()
@@ -275,8 +282,8 @@ def cycle(pack, status_dir, submit=False, submit_lock=None, global_active_limit=
                             s["log_tail"] = stream.read().decode(errors="replace")
                     except OSError:
                         pass
-                    if retryable_startup_io(s, root, config["max_retries"]):
-                        s.update(classification="retryable", reason="startup ledger read EIO; one retry before any output")
+                    if retryable_startup_io(s, root, config["max_retries"], ledger_path):
+                        s.update(classification="retryable", reason="startup ledger unavailable; one retry before any output")
             ct.atomic_json(ledger_path, ledger)
             if submit:
                 ready = ready_workers(pack, ledger, snapshots)

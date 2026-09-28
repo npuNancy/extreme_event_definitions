@@ -243,18 +243,39 @@ def test_accounting_keeps_peak_across_steps(monkeypatch):
 
 
 def test_startup_io_retry_requires_absent_attempt_and_has_one_retry(tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    ledger_path.write_text("{}")
     state = {"classification": "deterministic_failure", "scheduler_state": "FAILED", "exit_code": "1:0",
              "attempt": 1, "task_id": "task", "job_id": "123",
              "log_tail": 'ledger = ct.read_json(center / "runtime/ledger.json")\nOSError: [Errno 5] Input/output error\n'}
-    assert control.retryable_startup_io(state, tmp_path, 2)
-    assert not control.retryable_startup_io(state, tmp_path, 0)
+    assert control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    assert not control.retryable_startup_io(state, tmp_path, 0, ledger_path)
     for changes in ({"attempt": 2}, {"classification": "unknown"}, {"scheduler_state": "CANCELLED"},
                     {"exit_code": "0:9"}, {"log_tail": "OSError: [Errno 5] Input/output error"},
                     {"log_tail": state["log_tail"] + "ValueError: different terminal failure"}):
-        assert not control.retryable_startup_io(dict(state, **changes), tmp_path, 2)
+        assert not control.retryable_startup_io(dict(state, **changes), tmp_path, 2, ledger_path)
+    ledger_path.unlink()
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    ledger_path.write_text("{}")
     attempt = tmp_path / "attempts/task/123"
     attempt.mkdir(parents=True)
-    assert not control.retryable_startup_io(state, tmp_path, 2)
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+
+
+def test_missing_startup_ledger_retry_requires_exact_restored_path(tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    state = {"classification": "deterministic_failure", "scheduler_state": "FAILED", "exit_code": "1:0",
+             "attempt": 1, "task_id": "task", "job_id": "123",
+             "log_tail": 'ledger = ct.read_json(center / "runtime/ledger.json")\n'
+                         f"FileNotFoundError: [Errno 2] No such file or directory: {str(ledger_path)!r}\n"}
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    ledger_path.write_text("{}")
+    assert control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    assert not control.retryable_startup_io(dict(state, attempt=2), tmp_path, 2, ledger_path)
+    wrong = dict(state, log_tail=state["log_tail"].replace(str(ledger_path), str(tmp_path / "input.nc")))
+    assert not control.retryable_startup_io(wrong, tmp_path, 2, ledger_path)
+    (tmp_path / "attempts/task/123").mkdir(parents=True)
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
 
 
 def test_unprepared_worker_does_not_block_other_accounts(tmp_path):
