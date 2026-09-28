@@ -45,7 +45,7 @@ CSV、网格信号/sidecar及共享准备资产不是Git部署内容。共享挂
 
 NODE_FAIL/PREEMPTED最多自动重试两次；TIMEOUT/OOM为resource_failure；代码、权限、身份、schema问题需调查修复；CANCELLED不自动复活。资源或代码修改使用新的不可变profile/运行配置，不覆盖在途脚本或绕过任务身份。
 
-启动阶段读取中央ledger的明确EIO或指向该ledger准确路径的ENOENT异常，仅在中央台账当前存在、Slurm FAILED/1:0、首次尝试且尚无attempt目录时允许一次重试；再次失败须调查。该规则不覆盖运行中I/O错误，max_retries=0时禁用。
+启动阶段读取中央ledger的明确EIO或ENOENT异常（准确台账路径，或已打开文件的f.read调用栈），仅在中央台账当前存在、Slurm FAILED/1:0、首次尝试且尚无attempt目录时允许一次重试；再次失败须调查。该规则不覆盖运行中I/O错误，max_retries=0时禁用。
 
 每轮更新Job ID、状态、exit、elapsed、MaxRSS、错误日志尾、receipt、attempt、原因与next_action。status-dir的progress.md包含Last checked、分类计数和逐任务表；无变化也更新，未观测任务保留unknown。本地镜像目录为本目录的completion_status，已忽略于Git。
 

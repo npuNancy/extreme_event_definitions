@@ -278,6 +278,22 @@ def test_missing_startup_ledger_retry_requires_exact_restored_path(tmp_path):
     assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
 
 
+def test_missing_open_ledger_retry_requires_read_frame(tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    ledger_path.write_text("{}")
+    prefix = 'ledger = ct.read_json(center / "runtime/ledger.json")\n'
+    error = "FileNotFoundError: [Errno 2] No such file or directory\n"
+    state = {"classification": "deterministic_failure", "scheduler_state": "FAILED", "exit_code": "1:0",
+             "attempt": 1, "task_id": "task", "job_id": "123", "log_tail": prefix + error}
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    state["log_tail"] = prefix + "return f.read()\n" + error
+    assert control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+    assert not control.retryable_startup_io(dict(state, log_tail="return f.read()\n" + error), tmp_path, 2, ledger_path)
+    assert not control.retryable_startup_io(dict(state, attempt=2), tmp_path, 2, ledger_path)
+    ledger_path.unlink()
+    assert not control.retryable_startup_io(state, tmp_path, 2, ledger_path)
+
+
 def test_unprepared_worker_does_not_block_other_accounts(tmp_path):
     pack = {"campaign": {"worker_root_template": str(tmp_path / "{username}"), "resource_profile": "v1"}, "jobs": []}
     pack["identity"] = ct.fingerprint(pack)

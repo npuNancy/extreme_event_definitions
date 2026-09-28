@@ -134,10 +134,12 @@ def retryable_startup_io(state, root, max_retries, ledger_path):
     tail = state.get("log_tail", "").rstrip()
     errors = ("OSError: [Errno 5] Input/output error",
               f"FileNotFoundError: [Errno 2] No such file or directory: {str(ledger_path)!r}")
+    missing_during_read = (tail.endswith("FileNotFoundError: [Errno 2] No such file or directory")
+                           and "return f.read()" in tail)
     if (state["classification"] != "deterministic_failure" or state.get("scheduler_state") != "FAILED"
             or state.get("exit_code") != "1:0" or not 0 < state["attempt"] <= min(1, max_retries)
             or 'ledger = ct.read_json(center / "runtime/ledger.json")' not in tail
-            or not tail.endswith(errors)):
+            or not (tail.endswith(errors) or missing_during_read)):
         return False
     try:
         if not Path(ledger_path).is_file():
