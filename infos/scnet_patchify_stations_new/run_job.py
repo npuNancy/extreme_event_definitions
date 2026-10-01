@@ -147,7 +147,8 @@ def execute_science(pack, row, claim, ledger, shared, job):
         ct.atomic_json(shared / "runtime/acl_probe" / f"compute-{job}.json",
                        {"job_id": job, "username": pwd.getpwuid(os.getuid()).pw_name,
                         "shared_root": str(shared.resolve())})
-        prepared = pipeline.prepare(pack["campaign"], attempt / "shared", pack["code_sha"])
+        prepared = pipeline.prepare(pack["campaign"], attempt / "shared", pack["code_sha"],
+                                    workers=min(4, row["cpus"]))
         prepared_contract(prepared, pack)
         return "COMPLETED", attempt / "shared/prepared.json"
     prep_row = next(r for r in pack["jobs"] if r["stage"] == "prepare")

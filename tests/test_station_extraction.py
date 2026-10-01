@@ -276,6 +276,46 @@ def counterfactual_campaign(root, tech, calendar):
     return config
 
 
+def test_parallel_prepare_matches_serial_and_reuses_identical_grids(tmp_path, monkeypatch, capsys):
+    from grid_extreme_signals import station_pipeline as pipeline
+
+    config = counterfactual_campaign(tmp_path / "source", "wind", "365_day")
+    # A changed Climate mask must get separate mappings for every Station scenario.
+    for year in (2020, 2021):
+        with netCDF4.Dataset(tmp_path / f"source/ssp585_P2_{year}.nc", "r+") as ds:
+            ds["domain_mask"][0, 0] = 0
+    calls = []
+    original = pipeline.build_mapping
+
+    def tracked(*args):
+        calls.append(args[0]["sha256"])
+        return original(*args)
+
+    monkeypatch.setattr(pipeline, "build_mapping", tracked)
+    serial = prepare(config, tmp_path / "shared", "a" * 40)
+    assert len(calls) == len(serial["mappings"]) == 6
+    calls.clear()
+    parallel = prepare(config, tmp_path / "shared", "a" * 40, workers=2)
+    assert parallel == serial
+    assert len(calls) == 6
+    logs = capsys.readouterr().out
+    assert "workers=2" in logs and "sources 6/6" in logs and "18 units, 6 unique mappings" in logs
+    for key in parallel["combinations"]:
+        first = extract_combination(serial, key, tmp_path / "out", "a" * 40)
+        assert extract_combination(parallel, key, tmp_path / "out", "a" * 40) == first
+
+
+def test_parallel_prepare_rejects_incomplete_source(tmp_path):
+    config = fixture_campaign(tmp_path / "source")
+    path = tmp_path / "source/P2_2021.nc.json"
+    meta = ct.read_json(path)
+    meta["status"] = "PARTIAL"
+    ct.atomic_json(path, meta)
+    with pytest.raises(ValueError, match="not a completed signals artifact"):
+        prepare(config, tmp_path / "shared", "a" * 40, workers=2)
+    assert not (tmp_path / "shared/prepared.json").exists()
+
+
 @pytest.mark.parametrize("tech,calendar", [("wind", "365_day"), ("solar", "proleptic_gregorian")])
 def test_counterfactual_pipeline_and_cli(tmp_path, tech, calendar):
     import subprocess

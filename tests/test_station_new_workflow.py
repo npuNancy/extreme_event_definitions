@@ -166,6 +166,7 @@ def test_runner_scientific_stages_recovery_and_receipts(tmp_path, monkeypatch):
     rows.append(dict(stage="publish", unit_id="publish", task_id="publish", key=None, depends_on=["P1", "P2"]))
     for row in rows:
         row["logical_owner"] = "acm83pfnji"
+        row["cpus"] = 2
     pack = dict(campaign=config, code_sha="a" * 40, identity="pack", campaign_identity="campaign", jobs=rows,
                 resource_profile="v1")
     ledger = progress.initial_ledger(pack)

@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import json
+import multiprocessing
 from pathlib import Path
+from time import monotonic
 
 from . import station_contract as ct
 from .station_catalog import build_catalog, write_csv
@@ -10,7 +15,29 @@ from .station_mapping import grid_metadata, build_mapping
 from .station_extract import extract_file, audit_combination
 
 
-def prepare(campaign, root, code_sha):
+def _freeze_source(item):
+    key, c, index_sha = item
+    frozen = []
+    for a in c["signals"]:
+        path = a["path"]
+        raw = Path(path + ".json").read_bytes()
+        meta = json.loads(raw)
+        if meta.get("status") != "COMPLETED" or meta.get("context", {}).get("stage") != "signals":
+            raise ValueError(f"source is not a completed signals artifact: {path}")
+        frozen.append({"path": path, "years": a["years"], "stat": ct.file_stat(path),
+                       "sidecar_sha256": hashlib.sha256(raw).hexdigest(), "source_identity": meta["identity"],
+                       "index_sha256": index_sha})
+    return key, frozen, grid_metadata(frozen[0]["path"])
+
+
+def prepare(campaign, root, code_sha, *, workers=1):
+    if type(workers) is not int or workers < 1:
+        raise ValueError("prepare workers must be a positive integer")
+    started = monotonic()
+
+    def report(message):
+        print(f"[prepare elapsed={monotonic() - started:.1f}s] {message}", flush=True)
+
     root = Path(root).resolve()
     index = ct.read_json(campaign["input_index"])
     manifest = ct.read_json(campaign["patch_manifest"])
@@ -28,28 +55,46 @@ def prepare(campaign, root, code_sha):
         raise ValueError("campaign and input analysis years differ")
     root.mkdir(parents=True, exist_ok=True)
     with ct.lock(root / ".prepare.lock"):
-        catalogs = {ssp: build_catalog(path, ssp, root / "catalogs")
-                    for ssp, path in sorted(station_files.items())}
+        catalogs = {}
+        for ssp, path in sorted(station_files.items()):
+            report(f"catalog {ssp}: started")
+            catalogs[ssp] = build_catalog(path, ssp, root / "catalogs")
+            report(f"catalog {ssp}: completed")
         groups = defaultdict(dict)
-        for c in sources.values():
-            frozen = []
-            for a in c["signals"]:
-                path = a["path"]
-                meta = ct.read_json(path + ".json")
-                if meta.get("status") != "COMPLETED" or meta.get("context", {}).get("stage") != "signals":
-                    raise ValueError(f"source is not a completed signals artifact: {path}")
-                frozen.append({"path": path, "years": a["years"], "stat": ct.file_stat(path),
-                               "sidecar_sha256": ct.digest(path + ".json"), "source_identity": meta["identity"],
-                               "index_sha256": index_sha})
-            c["signals"] = frozen
-            group = (c["model"], c["scenario"], c["tech"])
-            groups[group][c["patch"]] = grid_metadata(frozen[0]["path"])
+        items = [(key, c, index_sha) for key, c in sources.items()]
+        workers = min(workers, len(items))
+        report(f"sources 0/{len(items)}: workers={workers}")
+        scan_started = monotonic()
+
+        def collect(results):
+            for n, (key, frozen, grid) in enumerate(results, 1):
+                c = sources[key]
+                c["signals"] = frozen
+                groups[(c["model"], c["scenario"], c["tech"])][c["patch"]] = grid
+                if n % 25 == 0 or n == len(items):
+                    remaining = (monotonic() - scan_started) / n * (len(items) - n)
+                    report(f"sources {n}/{len(items)}: scan_remaining~{remaining:.0f}s")
+
+        if workers <= 1:
+            collect(map(_freeze_source, items))
+        else:
+            # Each process owns its NetCDF/HDF5 handles; no threaded Dataset access.
+            with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+                collect(pool.map(_freeze_source, items))
         combos = ct.station_combinations(sources, station_files)
         mappings = {}
+        mapping_cache = {}
         for (model, climate, tech), grids in sorted(groups.items()):
+            grid_key = ct.fingerprint({p: g["fingerprint"] for p, g in sorted(grids.items())})
             for station in catalogs:
-                m = build_mapping(catalogs[station]["catalogs"][tech], grids, manifest,
-                                  root / "mappings", campaign["max_distance_deg"])
+                catalog = catalogs[station]["catalogs"][tech]
+                cache_key = (catalog["sha256"], grid_key)
+                if cache_key not in mapping_cache:
+                    report(f"mapping {model}/{climate}/{station}/{tech}: started")
+                    mapping_cache[cache_key] = build_mapping(catalog, grids, manifest,
+                                                            root / "mappings", campaign["max_distance_deg"])
+                    report(f"mapping {model}/{climate}/{station}/{tech}: completed")
+                m = mapping_cache[cache_key]
                 mappings[m["identity"]] = m
                 for patch in grids:
                     key = ct.combo_key(dict(model=model, climate_scenario=climate,
@@ -67,6 +112,7 @@ def prepare(campaign, root, code_sha):
         ct.atomic_json(root / "input_index.json", index)
         ct.atomic_json(root / "patch_manifest.json", manifest)
         ct.atomic_json(root / "prepared.json", prepared)
+        report(f"completed: {len(combos)} units, {len(mappings)} unique mappings")
         return prepared
 
 
