@@ -146,3 +146,13 @@ def test_ledger_previous_inode_remains_available(tmp_path):
     snapshots=list((shared/'runtime/ledger_history').glob('ledger-*.json'))
     assert len(snapshots)==1 and snapshots[0].stat().st_ino==original
     assert ct.read_json(path)['checked_at']=='later'
+
+
+def test_transient_ledger_read_is_limited_to_startup_ledger(tmp_path):
+    context='ledger = ct.read_json(shared / "runtime/ledger.json")\n'
+    missing="FileNotFoundError: [Errno 2] No such file or directory: "
+    assert ctl.transient_ledger_read(context+'OSError: [Errno 5] Input/output error',tmp_path)
+    assert ctl.transient_ledger_read(context+missing+repr(str(tmp_path/'runtime/ledger.json')),tmp_path)
+    assert not ctl.transient_ledger_read(context+missing+repr(str(tmp_path/'input.nc')),tmp_path)
+    assert not ctl.transient_ledger_read('OSError: [Errno 5] Input/output error',tmp_path)
+    assert not ctl.transient_ledger_read(context+'PermissionError: [Errno 13] Permission denied',tmp_path)

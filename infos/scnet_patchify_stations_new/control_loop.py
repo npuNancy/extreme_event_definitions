@@ -174,6 +174,13 @@ def estimate(pack, ledger, slots):
                 basis=basis, confidence=confidence, queue_delay='unknown, additional')
 
 
+def transient_ledger_read(tail, shared):
+    return ('ledger = ct.read_json(shared / "runtime/ledger.json")' in tail
+            and (tail.endswith('OSError: [Errno 5] Input/output error')
+                 or tail.endswith("FileNotFoundError: [Errno 2] No such file or directory: "
+                                  + repr(str(shared / 'runtime/ledger.json')))))
+
+
 def reconcile(pack, shared, cycle):
     with lock(shared / 'runtime/.submit.lock'):
         ledger = ct.read_json(shared / 'runtime/ledger.json')
@@ -225,8 +232,7 @@ def reconcile(pack, shared, cycle):
             tail = state['log_tail'].get('err', '').rstrip()
             if (result == 'deterministic_failure' and state['attempt'] < 3
                     and main and main['state'] == 'FAILED' and main['exit_code'] == '1:0'
-                    and 'ledger = ct.read_json(shared / "runtime/ledger.json")' in tail
-                    and tail.endswith('OSError: [Errno 5] Input/output error')
+                    and transient_ledger_read(tail, shared)
                     and not (shared / 'attempts' / row['task_id'] / job).exists()):
                 result = 'retryable'
                 state['reason'] = 'Transient shared ledger read failure before any scientific output; bounded retry'
