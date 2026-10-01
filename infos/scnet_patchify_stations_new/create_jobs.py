@@ -155,7 +155,7 @@ def parser():
     p.add_argument("--resource-profile", default="events_new_v1")
     p.add_argument("--partition", default="wzhctest")
     p.add_argument("--cpus-per-task", type=int, default=10)
-    p.add_argument("--prepare-cpus", type=int, default=10)
+    p.add_argument("--prepare-cpus", type=int, default=16)
     p.add_argument("--publish-cpus", type=int, default=10)
     p.add_argument("--time", default="24:00:00")
     p.add_argument("--dry-run", action="store_true")

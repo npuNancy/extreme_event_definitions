@@ -131,7 +131,7 @@ incomplete_output、dependency_blocked、unknown。合法空unit的分类同为s
 配置、身份、缺输入、ACL错误停止该分支，先修复再处理，不循环重试。
 科学配置/编码/代码变化改变campaign_identity，应建立新RUN_ID，不向旧运行混入新产物。
 
-作业默认10CPU、24小时；prepare源文件准备最多4进程（不超过申请CPU数），catalog/mapping及extract+audit/publish串行。prepare日志提供阶段耗时、每25个源组合的进度和源扫描剩余时间；结合这些记录估计整体ETA，不能按CPU数线性推算。
+prepare默认16CPU、最多16个源文件准备进程（不超过申请CPU数），catalog/mapping串行；extract+audit/publish默认10CPU、单进程。各阶段默认24小时。prepare日志提供阶段耗时、每25个源组合的进度和源扫描剩余时间；结合这些记录估计整体ETA，不能按CPU数线性推算。
 wzhctest、每核约3.5GB是参考项目画像，首次运行前验证平台限制；只用成功任务的充分MaxRSS样本调节资源，保留至少20%余量。
 重试创建新JobID目录，history列出的本轮有效完整分片可复用；旧场站campaign的文件不能加入history。
 
