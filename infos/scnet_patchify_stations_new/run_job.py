@@ -177,7 +177,7 @@ def execute_science(pack, row, claim, ledger, shared, job):
         result = pipeline.audit(prepared, row["key"], extraction, output)
         return result["status"], output
     audits = {by_unit[uid]["key"]: r["output"] for uid, r in dependencies.items()}
-    pipeline.publish(prepared, audits, attempt / "publication")
+    pipeline.publish(prepared, audits, attempt / "publication", workers=min(16, row["cpus"]))
     # Publish the stable entry point only after the complete audited index exists.
     for name in ("coverage_summary.csv.gz", "authoritative_index.json"):
         source = attempt / "publication/runtime" / name

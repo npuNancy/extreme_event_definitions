@@ -167,8 +167,23 @@ def audit(prepared, key, extraction, output):
     return audit_combination(c, mapping, extraction["outputs"], output)
 
 
-def publish(prepared, audits, root):
+def _publication_audit(item):
+    key, audit_path, c = item
+    result = ct.read_json(audit_path)
+    if result["status"] not in ("COMPLETED", "SKIPPED_NO_STATIONS") or ct.combo_key(result["combination"]) != key:
+        raise ValueError("invalid audit identity/status")
+    if result["mapping_identity"] != c["mapping_identity"]:
+        raise ValueError("audit mapping identity mismatch")
+    for record in result["outputs"]:
+        if not ct.completed(record["artifact"]["path"], record["identity"]):
+            raise ValueError("published output changed after audit")
+    return key, ct.file_stat(audit_path), result
+
+
+def publish(prepared, audits, root, *, workers=1):
     """Publish only small indexes; scientific audit must already have succeeded."""
+    if type(workers) is not int or workers < 1:
+        raise ValueError("publish workers must be a positive integer")
     expected = set(prepared["combinations"])
     if set(audits) != expected:
         raise ValueError("publication requires every expected combination audit")
@@ -177,26 +192,32 @@ def publish(prepared, audits, root):
              "mappings": prepared["mappings"], "combinations": {}}
     coverage = []
     group_totals = defaultdict(lambda: {"completed_combinations": 0, "empty_combinations": 0, "events": {}})
-    for key, audit_path in sorted(audits.items()):
-        result = ct.read_json(audit_path)
-        c = prepared["combinations"][key]
-        if result["status"] not in ("COMPLETED", "SKIPPED_NO_STATIONS") or ct.combo_key(result["combination"]) != key:
-            raise ValueError("invalid audit identity/status")
-        if result["mapping_identity"] != c["mapping_identity"]:
-            raise ValueError("audit mapping identity mismatch")
-        totals = group_totals[(c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])]
-        totals["completed_combinations"] += 1
-        totals["empty_combinations"] += result["status"] == "SKIPPED_NO_STATIONS"
-        for r in result["outputs"]:
-            if not ct.completed(r["artifact"]["path"], r["identity"]):
-                raise ValueError("published output changed after audit")
-            for event, stats in r["statistics"].items():
-                target = totals["events"].setdefault(event, dict(event_count=0, valid_count=0, missing_count=0))
-                for field in target:
-                    target[field] += stats[field]
-        index["combinations"][key] = {**{k: c[k] for k in ("model", "climate_scenario", "station_scenario", "patch", "tech")},
-                                      "audit": ct.file_stat(audit_path), "status": result["status"],
-                                      "outputs": result["outputs"], "mapping_identity": c["mapping_identity"]}
+    items = [(key, path, prepared["combinations"][key]) for key, path in sorted(audits.items())]
+    started = monotonic()
+
+    def collect(results):
+        for n, (key, audit_stat, result) in enumerate(results, 1):
+            c = prepared["combinations"][key]
+            totals = group_totals[(c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])]
+            totals["completed_combinations"] += 1
+            totals["empty_combinations"] += result["status"] == "SKIPPED_NO_STATIONS"
+            for r in result["outputs"]:
+                for event, stats in r["statistics"].items():
+                    target = totals["events"].setdefault(event, dict(event_count=0, valid_count=0, missing_count=0))
+                    for field in target:
+                        target[field] += stats[field]
+            index["combinations"][key] = {**{k: c[k] for k in ("model", "climate_scenario", "station_scenario", "patch", "tech")},
+                                          "audit": audit_stat, "status": result["status"],
+                                          "outputs": result["outputs"], "mapping_identity": c["mapping_identity"]}
+            if n % 100 == 0 or n == len(items):
+                print(f"[publish elapsed={monotonic() - started:.1f}s] audits {n}/{len(items)}", flush=True)
+
+    if workers == 1 or len(items) < 2:
+        collect(map(_publication_audit, items))
+    else:
+        with ProcessPoolExecutor(max_workers=min(workers, len(items)),
+                                 mp_context=multiprocessing.get_context("spawn")) as pool:
+            collect(pool.map(_publication_audit, items))
     seen = set()
     for c in prepared["combinations"].values():
         group = (c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])

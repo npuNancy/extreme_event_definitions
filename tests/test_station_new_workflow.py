@@ -48,7 +48,8 @@ def test_full_pack_counts_identity_and_all_shells(inventory):
     assert pack["counts"] == dict(prepare=1, extract=3384, publish=1)
     assert pack["jobs"][0]["cpus"] == 16
     assert "#SBATCH --cpus-per-task=16" in scripts[pack["jobs"][0]["script"]]
-    assert all(row["cpus"] == 10 for row in pack["jobs"][1:])
+    assert all(row["cpus"] == 10 for row in pack["jobs"][1:-1])
+    assert pack["jobs"][-1]["cpus"] == 16
     assert len(scripts) == len(pack["jobs"]) == len({r["task_id"] for r in pack["jobs"]}) == 3386
     assert pack["signal_files"] == 33840
     assert len(pack["workers"]) == 14

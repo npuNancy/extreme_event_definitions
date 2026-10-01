@@ -387,3 +387,25 @@ def test_prepare_rejects_duplicate_station_alias(tmp_path):
     config["stations"].update(ssp585=config["stations"]["ssp126"], ssp560=config["stations"]["ssp126"])
     with pytest.raises(ValueError, match="duplicate Station file alias"):
         prepare(config, tmp_path / "shared", "a" * 40)
+
+
+def test_parallel_publication_matches_serial_and_rejects_changed_outputs(tmp_path):
+    config = fixture_campaign(tmp_path / "source")
+    prepared = prepare(config, tmp_path / "shared", "a" * 40)
+    audits = {}
+    for n, key in enumerate(prepared["combinations"]):
+        extraction = extract_combination(prepared, key, tmp_path / "outputs", "a" * 40)
+        path = tmp_path / f"audit_{n}.json"
+        audit(prepared, key, extraction, path)
+        audits[key] = str(path)
+    serial = publish(prepared, audits, tmp_path / "serial")
+    parallel = publish(prepared, audits, tmp_path / "parallel", workers=2)
+    assert parallel == serial
+    pd.testing.assert_frame_equal(
+        pd.read_csv(tmp_path / "serial/runtime/coverage_summary.csv.gz"),
+        pd.read_csv(tmp_path / "parallel/runtime/coverage_summary.csv.gz"))
+    output = next(iter(parallel["combinations"].values()))["outputs"][0]["artifact"]["path"]
+    Path(output + ".json").unlink()
+    with pytest.raises(ValueError, match="changed after audit"):
+        publish(prepared, audits, tmp_path / "rejected", workers=2)
+    assert not (tmp_path / "rejected/runtime/authoritative_index.json").exists()
