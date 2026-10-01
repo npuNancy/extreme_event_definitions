@@ -219,3 +219,14 @@ def test_aggregator_cannot_execute(inventory, monkeypatch):
     monkeypatch.setattr(runner.pwd, "getpwuid", lambda _: SimpleNamespace(pw_name="acjpoxgsdu"))
     with pytest.raises(ValueError, match="aggregator must not run"):
         runner.preflight(pack, pack["jobs"][0]["task_id"])
+
+
+def test_spool_script_path_without_bash_source(inventory, tmp_path):
+    _, scripts = jobs.build(inventory)
+    body = next(iter(scripts.values()))
+    assignment = next(line for line in body.splitlines() if line.startswith('STATION_JOB_SCRIPT='))
+    spool = tmp_path / "slurm_script"
+    spool.write_text(body)
+    result = subprocess.run(["bash", "-c", 'set -euo pipefail; ' + assignment + '; printf "%s" "$STATION_JOB_SCRIPT"',
+                             str(spool)], text=True, capture_output=True, check=True)
+    assert result.stdout == str(spool.resolve())

@@ -81,7 +81,7 @@ def render(row, args, workers):
         '  *) echo "Unauthorized station-event worker: $run_user" >&2; exit 2 ;;', "esac",
         ': "${SLURM_JOB_ID:?requires Slurm}"', ': "${STATION_REPO:?set checkout}"',
         ': "${STATION_JOB_PACK:?set prepared pack directory}"',
-        'export STATION_JOB_SCRIPT="$(realpath "${BASH_SOURCE[0]}")"',
+        'STATION_JOB_SCRIPT="$(realpath "$0")"', 'export STATION_JOB_SCRIPT',
         "export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1",
         'cd "$STATION_REPO"', shlex.join(command) + ' --pack "$STATION_JOB_PACK/manifest.json"', ""])
 
