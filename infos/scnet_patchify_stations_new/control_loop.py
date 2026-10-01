@@ -80,10 +80,10 @@ def save(shared, pack, ledger):
 
 def queue(user):
     result = {}
-    for line in command(['squeue', '-r', '-h', '-u', user, '-o', '%i|%T|%j|%k|%V|%M|%R']).splitlines():
-        fields = line.split('|')
+    for line in command(['squeue', '-r', '-h', '-u', user, '-o', '%i|%T|%100j|%160k|%V|%M|%R']).splitlines():
+        fields = [field.strip() for field in line.split('|')]
         if len(fields) != 7:
-            raise ValueError('unrecognized squeue row')
+            raise ValueError('unrecognized squeue row: '+repr(line))
         result[fields[0]] = dict(zip(('state', 'name', 'comment', 'submit', 'elapsed', 'reason'), fields[1:]))
     return result
 

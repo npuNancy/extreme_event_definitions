@@ -156,3 +156,16 @@ def test_transient_ledger_read_is_limited_to_startup_ledger(tmp_path):
     assert not ctl.transient_ledger_read(context+missing+repr(str(tmp_path/'input.nc')),tmp_path)
     assert not ctl.transient_ledger_read('OSError: [Errno 5] Input/output error',tmp_path)
     assert not ctl.transient_ledger_read(context+'PermissionError: [Errno 13] Permission denied',tmp_path)
+
+
+def test_queue_retains_full_identifiers_and_reports_unparsed_evidence(monkeypatch):
+    name='esnew_MPI-ESM1-2-HR_c126_s245_wind_R02C09';token='esnew-unique-token'
+    def response(args):
+        assert '%100j' in args[-1] and '%160k' in args[-1]
+        return f'123|RUNNING|{name:100}|{token:160}|2026-10-01T17:00:00|1:00|node01  \n'
+    monkeypatch.setattr(ctl,'command',response)
+    assert ctl.queue('worker')['123']['name']==name
+    assert ctl.queue('worker')['123']['comment']==token
+    monkeypatch.setattr(ctl,'command',lambda _: 'scheduler query unavailable\n')
+    with pytest.raises(ValueError,match='scheduler query unavailable'):
+        ctl.queue('worker')
