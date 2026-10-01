@@ -19,7 +19,7 @@ def load_mapping(path):
 
 
 def source_schema(ds, combination):
-    for key, attr in (("model", "model"), ("scenario", "scenario"), ("tech", "tech"), ("patch", "patch_id")):
+    for key, attr in (("model", "model"), ("climate_scenario", "scenario"), ("tech", "tech"), ("patch", "patch_id")):
         if getattr(ds, attr, None) != combination[key]:
             raise ValueError(f"source {attr} mismatch")
     names = sorted(n for n in ds.variables if n.startswith("signal_"))
@@ -81,7 +81,8 @@ def extract_file(artifact, combination, mapping_info, mapping_identity, output,
     mapping, map_attrs = load_mapping(mapping_info["path"])
     if map_attrs["identity"] != mapping_identity:
         raise ValueError("mapping identity mismatch")
-    contract = {"schema": ct.SCHEMA, "source": artifact["stat"],
+    contract = {"schema": ct.DUAL_SCENARIO_SCHEMA, "combination": ct.combo_key(combination),
+                "source": artifact["stat"],
                 "source_identity": artifact["source_identity"], "mapping": mapping_identity,
                 "mapping_file": ct.file_stat(mapping_info["path"]), "release": release_identity,
                 "code_sha": code_sha, "time_chunk": time_chunk,
@@ -132,8 +133,9 @@ def extract_file(artifact, combination, mapping_info, mapping_identity, output,
                 preserved = ("supported_events", "skipped_events", "skipped_reasons", "event_definitions",
                              "baseline_years", "analysis_years", "reference_variable", "provenance")
                 attrs = {k: getattr(src, k) for k in preserved if k in src.ncattrs()}
-                attrs.update(schema_version=ct.SCHEMA, Conventions="CF-1.9", featureType="timeSeries",
-                             model=combination["model"], scenario=combination["scenario"], tech=combination["tech"],
+                attrs.update(schema_version=ct.DUAL_SCENARIO_SCHEMA, Conventions="CF-1.9", featureType="timeSeries",
+                             model=combination["model"], climate_scenario=combination["climate_scenario"],
+                             station_scenario=combination["station_scenario"], tech=combination["tech"],
                              source_patch=combination["patch"], source_run_id=combination["source_run_id"],
                              source_file=artifact["path"], source_realpath=artifact["stat"]["path"],
                              source_signal_identity=artifact["source_identity"], source_collection_id="grid_v2",
@@ -210,6 +212,11 @@ def audit_combination(combination, mapping, records, output, sample_stations=16)
             names = source_schema(src, combination)
             if sorted(n for n in out.variables if n.startswith("signal_")) != names:
                 raise ValueError("output event list differs from source")
+            if record["contract"].get("combination") != ct.combo_key(combination):
+                raise ValueError("output combination identity mismatch")
+            for key in ("model", "climate_scenario", "station_scenario", "tech"):
+                if getattr(out, key, None) != combination[key]:
+                    raise ValueError(f"output {key} mismatch")
             if out.source_signal_identity != artifact["source_identity"]:
                 raise ValueError("output source identity mismatch")
             if events is not None and names != events:

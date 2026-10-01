@@ -9,16 +9,22 @@ from . import station_contract as ct
 from .station_catalog import load_catalog
 
 
-def open_station_signals(index, model, scenario, tech, station_ids=None, years=None):
-    """Return a subset Dataset; caller must close it. Does not require Dask.
+def open_station_signals(index, model, climate_scenario, station_scenario, tech, station_ids=None, years=None):
+    """Read an explicit Climate × Station subset; caller must close the Dataset.
 
+    Climate selects grid events; Station selects the catalog and stable IDs.
+    Station ssp560 is an alias for ssp585. Does not require Dask.
     Select station_ids/years for bounded memory. Concatenation may materialize
     selected arrays; this convenience reader is not a global streaming reducer.
     """
     index = ct.read_json(index) if isinstance(index, (str, Path)) else index
     if index.get("kind") != "station-event-index":
         raise ValueError("expected station-event-index")
-    catalog_info = index["catalogs"][scenario]["catalogs"][tech]
+    if index.get("schema") != ct.DUAL_SCENARIO_SCHEMA:
+        raise ValueError("expected station-extreme-v2 index with explicit Climate and Station")
+    climate_scenario = ct.scenario(climate_scenario)
+    station_scenario = ct.scenario(station_scenario, station=True)
+    catalog_info = index["catalogs"][station_scenario]["catalogs"][tech]
     if ct.digest(catalog_info["path"]) != catalog_info["sha256"]:
         raise ValueError("catalog identity changed")
     catalog = load_catalog(catalog_info["path"]).set_index("station_id")
@@ -27,17 +33,18 @@ def open_station_signals(index, model, scenario, tech, station_ids=None, years=N
         raise ValueError("duplicate or unknown station IDs")
     period = ct.years(years) if years else None
     selected = [(key, c) for key, c in sorted(index["combinations"].items())
-                if tuple(key.split("/")[i] for i in (0, 1, 3)) == (model, scenario, tech)]
+                if (c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])
+                == (model, climate_scenario, station_scenario, tech)]
     mapping_ids = {c["mapping_identity"] for _, c in selected}
     if len(mapping_ids) != 1:
-        raise ValueError("missing or inconsistent mappings within model/scenario/tech")
+        raise ValueError("missing or inconsistent mappings within model/Climate/Station/tech")
     mapping = index["mappings"][next(iter(mapping_ids))]
     if ct.file_stat(mapping["coverage"]) != mapping["files"][mapping["coverage"]]:
         raise ValueError("mapping coverage changed")
     coverage = load_catalog(mapping["coverage"]).set_index("station_id").loc[ids]
     wanted_patches = set(coverage.source_patch) - {""}
     if wanted_patches:
-        selected = [(key, c) for key, c in selected if key.split("/")[2] in wanted_patches]
+        selected = [(key, c) for key, c in selected if c["patch"] in wanted_patches]
     else:
         selected = next(([(key, c)] for key, c in selected if c["outputs"]), [])
     opened, patches = [], []
@@ -76,7 +83,7 @@ def open_station_signals(index, model, scenario, tech, station_ids=None, years=N
                     raise ValueError("patch time axes differ")
                 patches.append(one)
         if not patches:
-            raise ValueError("no event data for selected model/scenario/tech/years")
+            raise ValueError("no event data for selected model/Climate/Station/tech/years")
         nonempty = [p for p in patches if p.sizes["station_id"]]
         result = (xr.concat(nonempty, dim="station_id", data_vars="minimal", coords="minimal", compat="equals", join="exact")
                   if nonempty else patches[0])
@@ -86,7 +93,8 @@ def open_station_signals(index, model, scenario, tech, station_ids=None, years=N
         for name in ("lon", "lat", "activation_year", "mapping_status", "source_patch", "station_patch"):
             result = result.assign_coords({name: ("station_id", coverage[name].to_numpy())})
         result = result.rename({"station_id": "station"}).assign_coords(station_id=("station", ids), station=np.arange(len(ids)))
-        result.attrs.update(model=model, scenario=scenario, tech=tech, activation_mask="off")
+        result.attrs.update(model=model, climate_scenario=climate_scenario,
+                            station_scenario=station_scenario, tech=tech, activation_mask="off")
         for stale in ("source_patch", "identity", "source_file", "source_realpath", "source_signal_identity"):
             result.attrs.pop(stale, None)
         result.set_close(lambda: [ds.close() for ds in opened])

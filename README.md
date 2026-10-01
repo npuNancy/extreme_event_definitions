@@ -96,3 +96,80 @@ solar dust 因 BCSD 缺少 dust_aod 而跳过并记录原因。
 
 实现说明见 [全网格实施方案](document/全网格极端天气事件识别实施方案.md)。
 当前范围为计算代码和本地验证，暂不建设超算运行目录。
+
+## 从网格事件抽取 Climate × Station 场站事件
+
+`grid_extreme_signals/station_pipeline.py` 将已识别的网格事件按最近格点抽取到场站位置。
+`climate_scenario` 选择网格事件源，`station_scenario` 选择场站 CSV 和 station_id。
+固定 Station 时，跨 Climate 的场站 ID 保持一致；固定 Climate 和源格点时，各 Station 的事件值一致。
+全量输入产生 `4 GCM × 3 Climate × 3 Station × 2 tech × 47 patch = 3,384` 个 unit，
+每个 unit 处理该网格源已有的全部时间分片。空场站 unit 仍保留审核记录。
+
+准备配置示例（保存为本地 `station_campaign.json`，替换输入路径）：
+
+```json
+{
+  "models": ["CANESM5", "MPI-ESM1-2-HR", "MRI-ESM2-0", "BCC-CSM2-MR"],
+  "analysis_years": "2015-2060",
+  "input_index": "/path/to/grid_v2/runtime/authoritative_index.json",
+  "patch_manifest": "/path/to/grid_v2/runtime/patch_manifest.json",
+  "stations": {
+    "ssp126": "/path/to/stations_SSP1-2.6.csv",
+    "ssp245": "/path/to/stations_SSP2-4.5.csv",
+    "ssp585": "/path/to/stations_SSP5-6.0.csv"
+  },
+  "max_distance_deg": 0.15,
+  "extraction": {"time_chunk": 240, "station_chunk": 256, "complevel": 1}
+}
+```
+
+准备阶段将所选模型在源索引中的全部 Climate/patch/tech 与 `stations` 中的全部 Station 做笛卡尔积。
+小样本可使用较少模型、网格输入和 Station CSV；实际 unit 数以 `prepared.json` 为准。
+Station 接受 `ssp560` 作为 `ssp585` 的别名，两者不能同时配置；Climate 仅接受
+`ssp126/ssp245/ssp585`。场站 ID 使用规范化后的 Station 名称。
+
+```bash
+.venv/bin/python scripts/prepare_station_extraction.py \
+  --campaign station_campaign.json --shared-root /path/to/station_run/shared \
+  --code-sha <CODE_SHA>
+
+.venv/bin/python scripts/extract_station_events.py \
+  --prepared /path/to/station_run/shared/prepared.json \
+  --model CANESM5 --climate-scenario ssp126 --station-scenario ssp585 \
+  --patch R01C01 --tech wind --output-root /path/to/station_run/outputs \
+  --code-sha <CODE_SHA>
+```
+
+两步使用相同代码 SHA。省略 `--years` 时提取所有源时间分片；指定时必须与一个源分片完全一致。
+输出路径为 `<output-root>/<model>/climate_<C>/station_<S>/<patch>/<tech>/signals_<years>.nc`。
+NetCDF、sidecar 身份、审核索引和覆盖统计均区分两种情景。
+相同身份的完整分片可恢复；身份冲突或缺少完成证据时使用新的输出目录。
+
+本地批量抽取、审核和发布可调用现有 Python 接口：
+
+```python
+from pathlib import Path
+from grid_extreme_signals import station_contract as ct
+from grid_extreme_signals.station_pipeline import extract_combination, audit, publish
+from grid_extreme_signals.station_reader import open_station_signals
+
+root = Path("/path/to/station_run")
+prepared = ct.read_json(root / "shared/prepared.json")
+audits = {}
+for key in prepared["combinations"]:
+    extraction = extract_combination(prepared, key, root / "outputs", prepared["release"]["code_sha"])
+    audit_path = root / "audits" / key / "audit.json"
+    audit(prepared, key, extraction, audit_path)
+    audits[key] = str(audit_path)
+index = publish(prepared, audits, root)
+
+with open_station_signals(
+    index, model="CANESM5", climate_scenario="ssp126",
+    station_scenario="ssp585", tech="wind", station_ids=["<station_id>"], years="2030-2039",
+) as ds:
+    print(ds)
+```
+
+新场站产物和索引采用 `station-extreme-v2`，读取接口显式要求两种情景。
+已有单情景产物需重新准备并抽取到新目录。事件保留原生时间、`0/1/fill` 和现有不应用投运 mask 的行为。
+`infos/scnet_patchify_stations/` 的作业工具尚未适配双情景流程，本节仅说明本地计算接口。

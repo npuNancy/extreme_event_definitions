@@ -1,0 +1,16 @@
+{
+  "run_id": "events_cs_YYYYMMDD_HHMMSS",
+  "aggregate_root": "/work/home/acjpoxgsdu/extreme_stations_new/events_cs_YYYYMMDD_HHMMSS",
+  "models": ["CANESM5", "MPI-ESM1-2-HR", "MRI-ESM2-0", "BCC-CSM2-MR"],
+  "analysis_years": "2015-2060",
+  "bcsd_spot_check_accepted": true,
+  "input_index": "/work/share/acp6varuz3/extreme_grid/grid_v2/runtime/authoritative_index.json",
+  "patch_manifest": "/work/share/acp6varuz3/extreme_grid/grid_v2/runtime/patch_manifest.json",
+  "stations": {
+    "ssp126": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP1-2.6.csv",
+    "ssp245": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP2-4.5.csv",
+    "ssp585": "/work/home/acbw9wpn5k/project_climate_patchify/shared_run_20260913/inputs/stations/stations_SSP5-6.0.csv"
+  },
+  "max_distance_deg": 0.15,
+  "extraction": {"time_chunk": 240, "station_chunk": 256, "complevel": 1}
+}

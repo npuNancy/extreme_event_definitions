@@ -108,15 +108,15 @@ def test_full_pipeline_three_states_and_reader(tmp_path, calendar, descending, t
     assert coverage.signal_icing_valid_count + coverage.signal_icing_missing_count == 16
     assert coverage.signal_icing_valid_fraction_in_outputs + coverage.signal_icing_missing_fraction_in_outputs == pytest.approx(1)
     wanted = [station_id("ssp126", tech, 170., 0.), station_id("ssp126", tech, 179.9, 0.)]
-    with open_station_signals(index, "CANESM5", "ssp126", tech, wanted) as ds:
+    with open_station_signals(index, "CANESM5", "ssp126", "ssp126", tech, wanted) as ds:
         assert ds.sizes == {"time": 4, "station": 2}
         assert list(ds.station_id.values) == wanted
         assert np.isnan(ds.signal_icing[:, 0]).all()
         assert ds.mapping_status.values.tolist() == [3, 0]
         np.testing.assert_array_equal(ds.signal_icing[:, 1], [1, 0, 1, 0])
-    with open_station_signals(index, "CANESM5", "ssp126", tech, wanted, years="2021-2021") as ds:
+    with open_station_signals(index, "CANESM5", "ssp126", "ssp126", tech, wanted, years="2021-2021") as ds:
         assert ds.sizes["time"] == 2
-    with open_station_signals(index, "CANESM5", "ssp126", tech, wanted[:1]) as ds:
+    with open_station_signals(index, "CANESM5", "ssp126", "ssp126", tech, wanted[:1]) as ds:
         assert ds.sizes["time"] == 4 and np.isnan(ds.signal_icing).all()
 
 
@@ -191,7 +191,7 @@ def test_empty_technology_mapping_is_auditable(tmp_path):
     for key in p["combinations"]:
         result = extract_combination(p, key, tmp_path / "out", "a" * 40)
         assert result["status"] == "SKIPPED_NO_STATIONS"
-        assert audit(p, key, result, tmp_path / (key.split("/")[2] + ".json"))["status"] == "SKIPPED_NO_STATIONS"
+        assert audit(p, key, result, tmp_path / (key.split("/")[-2] + ".json"))["status"] == "SKIPPED_NO_STATIONS"
 
 
 def test_same_grid_multiple_sites_and_chunk_independence(tmp_path):
@@ -202,7 +202,7 @@ def test_same_grid_multiple_sites_and_chunk_independence(tmp_path):
     extra["lon"] = 179.9001
     pd.concat([frame, extra]).to_csv(csv, index=False)
     prepared = prepare(config, tmp_path / "shared", "a" * 40)
-    key = "CANESM5/ssp126/P1/wind"
+    key = "CANESM5/climate_ssp126/station_ssp126/P1/wind"
     first = extract_combination(prepared, key, tmp_path / "out1", "a" * 40)
     prepared2 = copy.deepcopy(prepared)
     prepared2["release"]["campaign"]["extraction"]["time_chunk"] = 7
@@ -214,3 +214,136 @@ def test_same_grid_multiple_sites_and_chunk_independence(tmp_path):
                 positions = np.flatnonzero((ds.lat.values == 0) & (abs(ds.lon.values - 179.9) < .001))
                 assert len(positions) == 2
                 np.testing.assert_array_equal(ds[name][:, positions[0]], ds[name][:, positions[1]])
+
+
+def test_full_counterfactual_inventory():
+    sources = {}
+    for model in ct.MODELS:
+        for climate in ct.SCENARIOS:
+            for tech in ct.TECHS:
+                for patch in range(47):
+                    c = dict(model=model, scenario=climate, tech=tech, patch=f"P{patch:02}")
+                    sources[ct.combo_key(c)] = c
+    units = ct.station_combinations(sources, ("ssp126", "ssp245", "ssp560"))
+    assert len(units) == 3384
+    assert {(c["climate_scenario"], c["station_scenario"]) for c in units.values()} == {
+        (climate, station) for climate in ct.SCENARIOS for station in ct.SCENARIOS}
+    assert all(ct.combo_key(c) == key for key, c in units.items())
+    with pytest.raises(ValueError, match="duplicate Station"):
+        ct.station_combinations(sources, ("ssp560", "ssp585"))
+    with pytest.raises(ValueError, match="Climate"):
+        ct.scenario("ssp560")
+
+
+def counterfactual_campaign(root, tech, calendar):
+    import shutil
+
+    config = fixture_campaign(root, tech=tech, calendar=calendar)
+    index = ct.read_json(config["input_index"])
+    originals = list(index["combinations"].values())
+    index["combinations"] = {}
+    for i, climate in enumerate(ct.SCENARIOS):
+        for original in originals:
+            c = copy.deepcopy(original)
+            c["scenario"] = climate
+            for a in c["artifacts"]:
+                source = Path(a["output"])
+                target = source.with_name(climate + "_" + source.name)
+                shutil.copyfile(source, target)
+                identity = f"{climate}-{target.stem}"
+                with netCDF4.Dataset(target, "r+") as ds:
+                    ds.set_auto_maskandscale(False)
+                    ds.scenario, ds.identity = climate, identity
+                    if i == 1:
+                        for name in ("signal_icing", "signal_low_resource"):
+                            values = ds[name][:]
+                            ds[name][:] = np.where(values == ct.FILL, ct.FILL, 1 - values)
+                    elif i == 2:
+                        ds["signal_icing"][:] = np.where(ds["signal_icing"][:] == ct.FILL, ct.FILL, 0)
+                ct.atomic_json(str(target) + ".json", dict(status="COMPLETED", identity=identity,
+                                                          context={"stage": "signals"}))
+                a["output"] = str(target)
+            index["combinations"][ct.combo_key(c)] = c
+    ct.atomic_json(config["input_index"], index)
+    raw = pd.read_csv(config["stations"]["ssp126"])
+    config["stations"] = {}
+    for i, station in enumerate(("ssp126", "ssp245", "ssp560")):
+        extra = raw.iloc[[0]].copy()
+        extra["lon"] = 179.91 + .01 * i
+        path = root / f"stations_{station}.csv"
+        pd.concat([raw, extra]).to_csv(path, index=False)
+        config["stations"][station] = str(path)
+    return config
+
+
+@pytest.mark.parametrize("tech,calendar", [("wind", "365_day"), ("solar", "proleptic_gregorian")])
+def test_counterfactual_pipeline_and_cli(tmp_path, tech, calendar):
+    import subprocess
+
+    config = counterfactual_campaign(tmp_path / "source", tech, calendar)
+    p = prepare(config, tmp_path / "shared", "a" * 40)
+    assert len(p["combinations"]) == 18
+    assert set(p["catalogs"]) == set(ct.SCENARIOS)
+    audits = {}
+    results = {}
+    for key, c in p["combinations"].items():
+        r = extract_combination(p, key, tmp_path / "out", "a" * 40)
+        results[key] = r
+        assert extract_combination(p, key, tmp_path / "out", "a" * 40) == r
+        path = tmp_path / "audits" / key / "audit.json"
+        audit(p, key, r, path)
+        audits[key] = str(path)
+        for record in r["outputs"]:
+            assert record["contract"]["combination"] == key
+            with netCDF4.Dataset(record["artifact"]["path"]) as ds:
+                assert ds.climate_scenario == c["climate_scenario"]
+                assert ds.station_scenario == c["station_scenario"]
+                assert ds.schema_version == ct.DUAL_SCENARIO_SCHEMA
+                assert list(ds["station_id"][:]) == [station_id(c["station_scenario"], tech, x, y)
+                                                   for x, y in zip(ds["lon"][:], ds["lat"][:])]
+    index = publish(p, audits, tmp_path / "published")
+    coverage = pd.read_csv(tmp_path / "published/runtime/coverage_summary.csv.gz")
+    assert len(coverage) == 9
+    assert set(zip(coverage.climate_scenario, coverage.station_scenario)) == {
+        (c, s) for c in ct.SCENARIOS for s in ct.SCENARIOS}
+    assert (coverage.station_count == 6).all()
+    assert (coverage.completed_combinations == 2).all()
+    for climate in ct.SCENARIOS:
+        expected = {"ssp126": [1, 0, 1, 0], "ssp245": [0, 1, 0, 1], "ssp585": [0, 0, 0, 0]}[climate]
+        for station in ct.SCENARIOS:
+            ids = [station_id(station, tech, 170., 0.), station_id(station, tech, 179.9, 0.)]
+            label = "ssp560" if station == "ssp585" else station
+            with open_station_signals(index, "CANESM5", climate, label, tech, ids) as ds:
+                assert list(ds.station_id.values) == ids
+                assert np.isnan(ds.signal_icing[:, 0]).all()
+                np.testing.assert_array_equal(ds.signal_icing[:, 1], expected)
+                assert ds.attrs["station_scenario"] == station
+                assert ds.attrs["climate_scenario"] == climate
+            with open_station_signals(index, "CANESM5", climate, label, tech, ids, "2021-2021") as ds:
+                np.testing.assert_array_equal(ds.signal_icing[:, 1], expected[2:])
+    with pytest.raises(ValueError, match="unknown station"):
+        open_station_signals(index, "CANESM5", "ssp126", "ssp245", tech,
+                             [station_id("ssp126", tech, 179.9, 0.)])
+    key = f"CANESM5/climate_ssp126/station_ssp585/P1/{tech}"
+    other = f"CANESM5/climate_ssp245/station_ssp585/P1/{tech}"
+    with pytest.raises(FileExistsError, match="conflicting"):
+        extract_combination(p, other, tmp_path / "retry", "a" * 40, prior=results[key]["outputs"])
+    wrong = dict(results[key], key=other)
+    with pytest.raises(ValueError, match="combination identity"):
+        audit(p, other, wrong, tmp_path / "bad_audit.json")
+    cli = Path(__file__).resolve().parents[1] / "scripts/extract_station_events.py"
+    result = subprocess.run([sys.executable, str(cli), "--prepared", str(tmp_path / "shared/prepared.json"),
+                             "--model", "CANESM5", "--climate-scenario", "ssp126", "--station-scenario", "ssp560",
+                             "--tech", tech, "--patch", "P1", "--output-root", str(tmp_path / "cli"),
+                             "--code-sha", "a" * 40, "--years", "2020-2020"],
+                            check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == "COMPLETED"
+    record = ct.read_json(tmp_path / "cli" / key / "signals_2020-2020.nc.json")
+    assert record["identity"] == results[key]["outputs"][0]["identity"]
+
+
+def test_prepare_rejects_duplicate_station_alias(tmp_path):
+    config = fixture_campaign(tmp_path / "source")
+    config["stations"].update(ssp585=config["stations"]["ssp126"], ssp560=config["stations"]["ssp126"])
+    with pytest.raises(ValueError, match="duplicate Station file alias"):
+        prepare(config, tmp_path / "shared", "a" * 40)

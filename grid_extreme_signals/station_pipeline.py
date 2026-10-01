@@ -15,15 +15,23 @@ def prepare(campaign, root, code_sha):
     index = ct.read_json(campaign["input_index"])
     manifest = ct.read_json(campaign["patch_manifest"])
     index_sha = ct.digest(campaign["input_index"])
-    combos = ct.combinations(index, campaign["models"])
+    sources = ct.combinations(index, campaign["models"])
+    station_files = {}
+    for label, path in campaign["stations"].items():
+        station = ct.scenario(label, station=True)
+        if station in station_files:
+            raise ValueError("duplicate Station file alias")
+        station_files[station] = path
+    if not station_files:
+        raise ValueError("empty Station scenarios")
     if index["analysis_years"] != campaign["analysis_years"]:
         raise ValueError("campaign and input analysis years differ")
     root.mkdir(parents=True, exist_ok=True)
     with ct.lock(root / ".prepare.lock"):
-        catalogs = {ssp: build_catalog(campaign["stations"][ssp], ssp, root / "catalogs")
-                    for ssp in sorted({c["scenario"] for c in combos.values()})}
+        catalogs = {ssp: build_catalog(path, ssp, root / "catalogs")
+                    for ssp, path in sorted(station_files.items())}
         groups = defaultdict(dict)
-        for key, c in combos.items():
+        for c in sources.values():
             frozen = []
             for a in c["signals"]:
                 path = a["path"]
@@ -36,14 +44,18 @@ def prepare(campaign, root, code_sha):
             c["signals"] = frozen
             group = (c["model"], c["scenario"], c["tech"])
             groups[group][c["patch"]] = grid_metadata(frozen[0]["path"])
+        combos = ct.station_combinations(sources, station_files)
         mappings = {}
-        for (model, ssp, tech), grids in sorted(groups.items()):
-            m = build_mapping(catalogs[ssp]["catalogs"][tech], grids, manifest,
-                              root / "mappings", campaign["max_distance_deg"])
-            mappings[m["identity"]] = m
-            for patch in grids:
-                combos[f"{model}/{ssp}/{patch}/{tech}"]["mapping_identity"] = m["identity"]
-        release = {"schema": ct.SCHEMA, "code_sha": code_sha,
+        for (model, climate, tech), grids in sorted(groups.items()):
+            for station in catalogs:
+                m = build_mapping(catalogs[station]["catalogs"][tech], grids, manifest,
+                                  root / "mappings", campaign["max_distance_deg"])
+                mappings[m["identity"]] = m
+                for patch in grids:
+                    key = ct.combo_key(dict(model=model, climate_scenario=climate,
+                                            station_scenario=station, patch=patch, tech=tech))
+                    combos[key]["mapping_identity"] = m["identity"]
+        release = {"schema": ct.DUAL_SCENARIO_SCHEMA, "code_sha": code_sha,
                    "index_sha256": index_sha, "patch_manifest_sha256": ct.digest(campaign["patch_manifest"]),
                    "catalog_identities": {s: c["identity"] for s, c in catalogs.items()},
                    "mapping_identities": sorted(mappings),
@@ -114,7 +126,7 @@ def publish(prepared, audits, root):
     expected = set(prepared["combinations"])
     if set(audits) != expected:
         raise ValueError("publication requires every expected combination audit")
-    index = {"schema": ct.SCHEMA, "kind": "station-event-index", "identity": prepared["identity"],
+    index = {"schema": ct.DUAL_SCENARIO_SCHEMA, "kind": "station-event-index", "identity": prepared["identity"],
              "release": prepared["release"], "catalogs": prepared["catalogs"],
              "mappings": prepared["mappings"], "combinations": {}}
     coverage = []
@@ -126,7 +138,7 @@ def publish(prepared, audits, root):
             raise ValueError("invalid audit identity/status")
         if result["mapping_identity"] != c["mapping_identity"]:
             raise ValueError("audit mapping identity mismatch")
-        totals = group_totals[(c["model"], c["scenario"], c["tech"])]
+        totals = group_totals[(c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])]
         totals["completed_combinations"] += 1
         totals["empty_combinations"] += result["status"] == "SKIPPED_NO_STATIONS"
         for r in result["outputs"]:
@@ -136,11 +148,12 @@ def publish(prepared, audits, root):
                 target = totals["events"].setdefault(event, dict(event_count=0, valid_count=0, missing_count=0))
                 for field in target:
                     target[field] += stats[field]
-        index["combinations"][key] = {"audit": ct.file_stat(audit_path), "status": result["status"],
+        index["combinations"][key] = {**{k: c[k] for k in ("model", "climate_scenario", "station_scenario", "patch", "tech")},
+                                      "audit": ct.file_stat(audit_path), "status": result["status"],
                                       "outputs": result["outputs"], "mapping_identity": c["mapping_identity"]}
     seen = set()
     for c in prepared["combinations"].values():
-        group = (c["model"], c["scenario"], c["tech"])
+        group = (c["model"], c["climate_scenario"], c["station_scenario"], c["tech"])
         if group in seen:
             continue
         seen.add(group)
@@ -150,9 +163,9 @@ def publish(prepared, audits, root):
             raise ValueError("station conservation failed")
         totals = group_totals[group]
         distances = m["distance_counts"]
-        summary = dict(zip(("model", "scenario", "tech"), group), **m["counts"],
+        summary = dict(zip(("model", "climate_scenario", "station_scenario", "tech"), group), **m["counts"],
                        station_count=m["catalog"]["count"], cross_patch_count=m["cross_patch_count"],
-                       ssp_source_rows=prepared["catalogs"][c["scenario"]]["raw_rows"],
+                       ssp_source_rows=prepared["catalogs"][c["station_scenario"]]["raw_rows"],
                        completed_combinations=totals["completed_combinations"], empty_combinations=totals["empty_combinations"],
                        distance_exact=distances["exact"],
                        distance_within_half_cell_nonexact=distances["within_half_cell"] - distances["exact"],

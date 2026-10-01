@@ -11,6 +11,7 @@ import re
 import uuid
 
 SCHEMA = "station-extreme-v1"
+DUAL_SCENARIO_SCHEMA = "station-extreme-v2"
 FILL = -127
 MODELS = ("CANESM5", "MPI-ESM1-2-HR", "MRI-ESM2-0", "BCC-CSM2-MR")
 SCENARIOS = ("ssp126", "ssp245", "ssp585")
@@ -86,7 +87,35 @@ def years(value):
 
 
 def combo_key(c):
+    if "climate_scenario" in c or "station_scenario" in c:
+        climate = scenario(c["climate_scenario"])
+        station = scenario(c["station_scenario"], station=True)
+        return "/".join(safe_name(v) for v in
+                        (c["model"], f"climate_{climate}", f"station_{station}", c["patch"], c["tech"]))
     return "/".join(safe_name(c[k]) for k in ("model", "scenario", "patch", "tech"))
+
+
+def scenario(value, *, station=False):
+    value = "ssp585" if station and value == "ssp560" else value
+    if value not in SCENARIOS:
+        raise ValueError(f"unsupported {'Station' if station else 'Climate'}: {value}")
+    return value
+
+
+def station_combinations(sources, station_scenarios):
+    stations = [scenario(s, station=True) for s in station_scenarios]
+    if not stations or len(set(stations)) != len(stations):
+        raise ValueError("empty or duplicate Station scenarios")
+    result = {}
+    for source in sources.values():
+        for station in stations:
+            c = {k: v for k, v in source.items() if k != "scenario"}
+            c.update(climate_scenario=scenario(source["scenario"]), station_scenario=station)
+            key = combo_key(c)
+            if key in result:
+                raise ValueError(f"duplicate station combination: {key}")
+            result[key] = c
+    return dict(sorted(result.items()))
 
 
 def combinations(index, models=None):
