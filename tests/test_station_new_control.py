@@ -76,3 +76,47 @@ def test_unknown_and_active_never_ready(inventory):
     for classification in ('active', 'unknown', 'submitting', 'resource_failure', 'deterministic_failure'):
         ledger['tasks'][row['task_id']]['classification'] = classification
         assert not ctl.ready_rows(pack, ledger)
+
+
+def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import hashlib
+    user = 'worker'
+    work = tmp_path / 'work'; (work / 'logs').mkdir(parents=True)
+    target = work / 'jobs'; target.mkdir()
+    script = target / 'prepare.sh'; script.write_text('#!/bin/bash\n')
+    env = work / 'env'; env.write_text('')
+    pack = dict(identity='pack', campaign_identity='campaign', resource_profile='v1', workers=[dict(username=user)],
+                jobs=[dict(task_id='prepare', unit_id='station-events-new/prepare', stage='prepare', key=None,
+                           logical_owner=user, depends_on=[], script=script.name, script_sha256=ct.digest(script))])
+    shared = tmp_path / 'shared'; (shared / 'runtime/completion_status').mkdir(parents=True)
+    ledger = progress.initial_ledger(pack); ledger.update(preparation={'status':'verified'}, observation_cycle='test')
+    ct.atomic_json(shared / 'runtime/ledger.json', ledger)
+    monkeypatch.setattr(ctl, 'load_pack', lambda _: pack)
+    monkeypatch.setattr(ctl.pwd, 'getpwuid', lambda _: SimpleNamespace(pw_name=user))
+    monkeypatch.setattr(ctl.Path, 'home', lambda: tmp_path)
+    for name,value in dict(STATION_WORK_ROOT=work,STATION_JOB_PACK=target,STATION_ENV_FILE=env).items():
+        monkeypatch.setenv(name,str(value))
+    held=[]; entries=[]
+    @contextmanager
+    def traced_lock(path,seconds=30):
+        held.append(Path(path).name);entries.append(tuple(held))
+        try:yield
+        finally:held.pop()
+    monkeypatch.setattr(ctl,'lock',traced_lock)
+    queues=iter([{}, {str(n):{} for n in range(20)}])
+    monkeypatch.setattr(ctl,'queue',lambda _:next(queues))
+    def submit(args):
+        assert held==['.submit.lock','.bcsd_submit.lock']
+        return '12345\n'
+    monkeypatch.setattr(ctl,'command',submit)
+    def between(_):
+        assert not held
+        data=ct.read_json(shared/'runtime/ledger.json');data['other_controller_evidence']='preserve'
+        ct.atomic_json(shared/'runtime/ledger.json',data)
+    monkeypatch.setattr(ctl.time,'sleep',between)
+    ctl.submit(pack,shared,'test')
+    result=ct.read_json(shared/'runtime/ledger.json')
+    assert result['other_controller_evidence']=='preserve'
+    assert result['tasks']['prepare']['job_id']=='12345'
+    assert entries.count(('.submit.lock',))==3

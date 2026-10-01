@@ -251,12 +251,12 @@ def submit(pack, shared, cycle):
     pack_dir = Path(os.environ['STATION_JOB_PACK'])
     assert load_pack(pack_dir / 'manifest.json')['identity'] == pack['identity']
     assert (work / 'logs').is_dir() and Path(os.environ['STATION_ENV_FILE']).is_file()
-    with lock(shared / 'runtime/.submit.lock', 55), lock(Path.home() / '.bcsd_submit.lock', 5):
-        ledger = ct.read_json(shared / 'runtime/ledger.json')
-        assert ledger['campaign_identity'] == pack['campaign_identity']
-        assert ledger.get('observation_cycle') == cycle and user not in ledger.get('account_errors', {})
-        submitted = []
-        while True:
+    submitted = []
+    while True:
+        with lock(shared / 'runtime/.submit.lock', 55), lock(Path.home() / '.bcsd_submit.lock', 5):
+            ledger = ct.read_json(shared / 'runtime/ledger.json')
+            assert ledger['campaign_identity'] == pack['campaign_identity']
+            assert ledger.get('observation_cycle') == cycle and user not in ledger.get('account_errors', {})
             active = queue(user)
             if len(active) >= 20:
                 reason = 'account-wide 20 active jobs'
@@ -304,6 +304,9 @@ def submit(pack, shared, cycle):
                 reason = 'submission unknown; resolve token first'
                 break
             save(shared, pack, ledger)
+        time.sleep(.25)
+    with lock(shared / 'runtime/.submit.lock', 55):
+        ledger = ct.read_json(shared / 'runtime/ledger.json')
         append(shared / 'runtime/cycles.jsonl', dict(checked_at=now(), cycle=cycle, phase='execute', username=user,
                submitted=submitted, active_count=len(active), empty_slot_reason=reason))
         save(shared, pack, ledger)
