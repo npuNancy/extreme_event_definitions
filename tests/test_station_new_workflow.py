@@ -180,7 +180,12 @@ def test_runner_scientific_stages_recovery_and_receipts(tmp_path, monkeypatch):
     for i, row in enumerate(rows):
         job = str(100 + i)
         claim = ledger["tasks"][row["task_id"]]
-        status, output = runner.execute_science(pack, row, claim, ledger, shared, job)
+        if row["stage"] == "publish":
+            with monkeypatch.context() as guard:
+                guard.setattr(ct, "completed", lambda *args: pytest.fail("publication visited an output sidecar"))
+                status, output = runner.execute_science(pack, row, claim, ledger, shared, job)
+        else:
+            status, output = runner.execute_science(pack, row, claim, ledger, shared, job)
         mark_success(pack, ledger, row, shared, job, status, output)
         receipt = runner.valid_receipt(claim, row, pack, shared)
         assert receipt["output"] == str(output)
@@ -202,6 +207,12 @@ def test_runner_scientific_stages_recovery_and_receipts(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="not verified"):
         runner.valid_receipt(state, rows[1], pack, shared)
     assert runner.valid_receipt(state, rows[1], pack, shared, require_success=False)["status"] == "COMPLETED"
+    with pytest.raises(ValueError, match="previously verified"):
+        runner.valid_receipt(state, rows[1], pack, shared, require_success=False, verify_outputs=False)
+    publication_state = ledger["tasks"]["publish"]
+    publication_state["execution_code_sha"] = "b" * 40
+    with pytest.raises(ValueError, match="execution SHA"):
+        runner.valid_receipt(publication_state, rows[-1], pack, shared)
     with pytest.raises(ValueError, match="outside new shared"):
         runner.inside(config["input_index"], shared)
 

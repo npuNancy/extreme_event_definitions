@@ -284,6 +284,16 @@ def submit(pack, shared, cycle):
                 reason = 'no safe ready candidates; dependencies or unresolved states'
                 break
             state = ledger['tasks'][candidate['task_id']]
+            export = '--export=ALL'
+            if candidate['stage'] == 'publish':
+                revision = ct.read_json(shared / 'runtime/publication_revision.json')
+                assert revision['status'] == 'verified' and revision['campaign_identity'] == pack['campaign_identity']
+                assert re.fullmatch(r'[0-9a-f]{40}', revision['code_sha'])
+                ct.safe_name(revision['environment_file'])
+                environment = work / revision['environment_file']
+                assert environment.is_file()
+                state['execution_code_sha'] = revision['code_sha']
+                export = '--export=ALL,STATION_ENV_FILE=' + str(environment)
             script = pack_dir / candidate['script']
             assert ct.digest(script) == candidate['script_sha256']
             if state['classification'] == 'retryable':
@@ -305,7 +315,7 @@ def submit(pack, shared, cycle):
                 append(shared / 'runtime/reassignment_log.jsonl', reassignment)
             save(shared, pack, ledger)
             try:
-                response = command(['sbatch', '--parsable', '--account='+user, '--chdir='+str(work), '--export=ALL',
+                response = command(['sbatch', '--parsable', '--account='+user, '--chdir='+str(work), export,
                                     '--comment='+state['submission_token'], str(script)]).strip()
                 job = response.split(';')[0]
                 if not re.fullmatch(r'\d+', job):

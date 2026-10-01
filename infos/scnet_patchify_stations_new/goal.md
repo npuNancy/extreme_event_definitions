@@ -148,6 +148,8 @@ wzhctest、每核约3.5GB是参考项目画像，首次运行前验证平台限�
 - extract：receipt.output为audit.json，内容与本unit/key/mapping/全部源分片对应；普通unit所有NC/sidecar契约有效。
   输出全time和station坐标检查、固定种子源值抽样已在同一计算作业完成；合法空任务由mapping计数为0证明。
 - publish：仅在所有extract经过上述调度及receipt验收后提交，由worker读全部审核产物，生成统一索引和coverage。
+  使用16进程读取已验收的receipt、audit及prepared汇总元数据，不逐个访问NC、sidecar或mapping文件，也不扫描产物目录。
+  发布执行SHA单独记录在claim、receipt和权威索引中；已有科学产物保留原代码SHA和RUN_ID。
   索引精确3384个组合，输出指向本共享根下权威尝试；coverage含4×3×3×2=72组，每组47个已处理组合，
   目录总数与MATCHED/OUTSIDE_DOMAIN/TOO_FAR/NO_SOURCE_PATCH之和一致。无需再全量重读网格事件或BCSD。
 

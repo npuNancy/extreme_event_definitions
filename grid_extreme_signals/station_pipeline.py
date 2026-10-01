@@ -168,19 +168,19 @@ def audit(prepared, key, extraction, output):
 
 
 def _publication_audit(item):
-    key, audit_path, c = item
+    key, audit_path, c, verify_outputs = item
     result = ct.read_json(audit_path)
     if result["status"] not in ("COMPLETED", "SKIPPED_NO_STATIONS") or ct.combo_key(result["combination"]) != key:
         raise ValueError("invalid audit identity/status")
     if result["mapping_identity"] != c["mapping_identity"]:
         raise ValueError("audit mapping identity mismatch")
-    for record in result["outputs"]:
+    for record in result["outputs"] if verify_outputs else ():
         if not ct.completed(record["artifact"]["path"], record["identity"]):
             raise ValueError("published output changed after audit")
     return key, ct.file_stat(audit_path), result
 
 
-def publish(prepared, audits, root, *, workers=1):
+def publish(prepared, audits, root, *, workers=1, verify_outputs=True):
     """Publish only small indexes; scientific audit must already have succeeded."""
     if type(workers) is not int or workers < 1:
         raise ValueError("publish workers must be a positive integer")
@@ -192,7 +192,7 @@ def publish(prepared, audits, root, *, workers=1):
              "mappings": prepared["mappings"], "combinations": {}}
     coverage = []
     group_totals = defaultdict(lambda: {"completed_combinations": 0, "empty_combinations": 0, "events": {}})
-    items = [(key, path, prepared["combinations"][key]) for key, path in sorted(audits.items())]
+    items = [(key, path, prepared["combinations"][key], verify_outputs) for key, path in sorted(audits.items())]
     started = monotonic()
 
     def collect(results):
@@ -225,7 +225,8 @@ def publish(prepared, audits, root, *, workers=1):
             continue
         seen.add(group)
         m = prepared["mappings"][c["mapping_identity"]]
-        verify_mapping(m)
+        if verify_outputs:
+            verify_mapping(m)
         if sum(m["counts"].values()) != m["catalog"]["count"]:
             raise ValueError("station conservation failed")
         totals = group_totals[group]

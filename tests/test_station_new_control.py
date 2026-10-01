@@ -78,7 +78,8 @@ def test_unknown_and_active_never_ready(inventory):
         assert not ctl.ready_rows(pack, ledger)
 
 
-def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_path, monkeypatch):
+@pytest.mark.parametrize('stage', ['prepare', 'publish'])
+def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_path, monkeypatch, stage):
     from contextlib import contextmanager
     import hashlib
     user = 'worker'
@@ -87,9 +88,13 @@ def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_pa
     script = target / 'prepare.sh'; script.write_text('#!/bin/bash\n')
     env = work / 'env'; env.write_text('')
     pack = dict(identity='pack', campaign_identity='campaign', resource_profile='v1', workers=[dict(username=user)],
-                jobs=[dict(task_id='prepare', unit_id='station-events-new/prepare', stage='prepare', key=None,
+                jobs=[dict(task_id='prepare', unit_id='station-events-new/'+stage, stage=stage, key=None,
                            logical_owner=user, depends_on=[], script=script.name, script_sha256=ct.digest(script))])
     shared = tmp_path / 'shared'; (shared / 'runtime/completion_status').mkdir(parents=True)
+    if stage == 'publish':
+        (work/'publication.env').write_text('')
+        ct.atomic_json(shared/'runtime/publication_revision.json', dict(status='verified',
+                       campaign_identity='campaign',code_sha='a'*40,environment_file='publication.env'))
     ledger = progress.initial_ledger(pack); ledger.update(preparation={'status':'verified'}, observation_cycle='test')
     ct.atomic_json(shared / 'runtime/ledger.json', ledger)
     monkeypatch.setattr(ctl, 'load_pack', lambda _: pack)
@@ -108,6 +113,10 @@ def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_pa
     monkeypatch.setattr(ctl,'queue',lambda _:next(queues))
     def submit(args):
         assert held==['.submit.lock','.bcsd_submit.lock']
+        if stage == 'publish':
+            assert '--export=ALL,STATION_ENV_FILE='+str(work/'publication.env') in args
+            state=ct.read_json(shared/'runtime/ledger.json')['tasks']['prepare']
+            assert state['execution_code_sha']=='a'*40
         return '12345\n'
     monkeypatch.setattr(ctl,'command',submit)
     def between(_):

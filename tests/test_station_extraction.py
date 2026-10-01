@@ -409,3 +409,16 @@ def test_parallel_publication_matches_serial_and_rejects_changed_outputs(tmp_pat
     with pytest.raises(ValueError, match="changed after audit"):
         publish(prepared, audits, tmp_path / "rejected", workers=2)
     assert not (tmp_path / "rejected/runtime/authoritative_index.json").exists()
+    # Accepted metadata publication does not revisit any scientific or mapping file.
+    for combination in parallel["combinations"].values():
+        for record in combination["outputs"]:
+            Path(record["artifact"]["path"]).unlink(missing_ok=True)
+            Path(record["artifact"]["path"] + ".json").unlink(missing_ok=True)
+    for mapping in prepared["mappings"].values():
+        for path in mapping["files"]:
+            Path(path).unlink(missing_ok=True)
+    metadata = publish(prepared, audits, tmp_path / "metadata", workers=2, verify_outputs=False)
+    assert metadata == serial
+    pd.testing.assert_frame_equal(
+        pd.read_csv(tmp_path / "serial/runtime/coverage_summary.csv.gz"),
+        pd.read_csv(tmp_path / "metadata/runtime/coverage_summary.csv.gz"))

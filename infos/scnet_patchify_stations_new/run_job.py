@@ -39,7 +39,10 @@ def receipt_path(shared, task, job):
     return Path(shared) / "runtime/receipts" / task / f"{job}.json"
 
 
-def valid_receipt(state, row, pack, shared, *, require_success=True):
+def valid_receipt(state, row, pack, shared, *, require_success=True, verify_outputs=True):
+    if not verify_outputs and (not require_success or state["classification"] != "succeeded"
+                               or not state.get("verified_at")):
+        raise ValueError("metadata publication requires previously verified dependencies")
     if require_success and state["classification"] != "succeeded":
         raise ValueError("dependency not verified successful")
     r = ct.read_json(receipt_path(shared, row["task_id"], state["job_id"]))
@@ -54,6 +57,8 @@ def valid_receipt(state, row, pack, shared, *, require_success=True):
         raise ValueError("dependency receipt artifact changed")
     if row["stage"] != "extract" and r["status"] != "COMPLETED":
         raise ValueError("global stage cannot be an empty station unit")
+    if row["stage"] == "publish" and r.get("execution_code_sha", r["code_sha"]) != state.get("execution_code_sha", pack["code_sha"]):
+        raise ValueError("publication execution SHA mismatch")
     if row["stage"] == "extract":
         audit = ct.read_json(output)
         if audit["status"] != r["status"] or ct.combo_key(audit["combination"]) != row["key"]:
@@ -64,7 +69,7 @@ def valid_receipt(state, row, pack, shared, *, require_success=True):
         else:
             if audit["station_count"] < 1 or [a["period"] for a in audit["outputs"]] != row["periods"]:
                 raise ValueError("audit output periods incomplete")
-            for a in audit["outputs"]:
+            for a in audit["outputs"] if verify_outputs else ():
                 path = inside(a["artifact"]["path"], shared)
                 if (a["contract"]["combination"] != row["key"]
                         or a["artifact"] != ct.file_stat(path) or not ct.completed(path, a["identity"])):
@@ -99,7 +104,9 @@ def preflight(pack, task):
         raise ValueError("billing account or CPU allocation mismatch")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()
-    if Path(os.environ["STATION_REPO"]).resolve() != ROOT or head != pack["code_sha"] or dirty:
+    execution_sha = (os.environ.get("STATION_PUBLICATION_CODE_SHA", pack["code_sha"])
+                     if row["stage"] == "publish" else pack["code_sha"])
+    if Path(os.environ["STATION_REPO"]).resolve() != ROOT or head != execution_sha or dirty:
         raise ValueError("requires clean checkout at pinned SHA")
     if ct.digest(os.environ["STATION_JOB_SCRIPT"]) != row["script_sha256"]:
         raise ValueError("executed script differs from frozen job pack")
@@ -127,7 +134,8 @@ def preflight(pack, task):
             break
         time.sleep(1)
     if (claim.get("job_id") != job or claim["username"] != user or claim["pack_identity"] != pack["identity"]
-            or claim["classification"] not in ("submitting", "active")):
+            or claim["classification"] not in ("submitting", "active")
+            or claim.get("execution_code_sha", pack["code_sha"]) != execution_sha):
         raise ValueError("job does not own current claim")
     return row, claim, ledger, shared, job, user
 
@@ -142,7 +150,8 @@ def execute_science(pack, row, claim, ledger, shared, job):
     dependencies = {}
     for uid in row["depends_on"]:
         dep = by_unit[uid]
-        dependencies[uid] = valid_receipt(ledger["tasks"][dep["task_id"]], dep, pack, shared)
+        dependencies[uid] = valid_receipt(ledger["tasks"][dep["task_id"]], dep, pack, shared,
+                                          verify_outputs=row["stage"] != "publish")
     if row["stage"] == "prepare":
         ct.atomic_json(shared / "runtime/acl_probe" / f"compute-{job}.json",
                        {"job_id": job, "username": pwd.getpwuid(os.getuid()).pw_name,
@@ -177,7 +186,11 @@ def execute_science(pack, row, claim, ledger, shared, job):
         result = pipeline.audit(prepared, row["key"], extraction, output)
         return result["status"], output
     audits = {by_unit[uid]["key"]: r["output"] for uid, r in dependencies.items()}
-    pipeline.publish(prepared, audits, attempt / "publication", workers=min(16, row["cpus"]))
+    index = pipeline.publish(prepared, audits, attempt / "publication", workers=min(16, row["cpus"]), verify_outputs=False)
+    index["publication"] = {"execution_code_sha": claim.get("execution_code_sha", pack["code_sha"]),
+                            "source_code_sha": pack["code_sha"], "workers": min(16, row["cpus"]),
+                            "verification": "previously accepted audit metadata"}
+    ct.atomic_json(attempt / "publication/runtime/authoritative_index.json", index)
     # Publish the stable entry point only after the complete audited index exists.
     for name in ("coverage_summary.csv.gz", "authoritative_index.json"):
         source = attempt / "publication/runtime" / name
@@ -212,6 +225,7 @@ def execute(pack_path, task):
                   "job_id": job, "username": user, "assignment_version": claim["assignment_version"],
                   "campaign_identity": pack["campaign_identity"], "pack_identity": pack["identity"],
                   "code_sha": pack["code_sha"], "resource_profile": pack["resource_profile"],
+                  "execution_code_sha": claim.get("execution_code_sha", pack["code_sha"]),
                   "output": str(output.resolve()), "artifact": ct.file_stat(output), "output_sha256": ct.digest(output),
                   "wall_seconds": time.monotonic() - started}
         ct.atomic_json(receipt, result)
