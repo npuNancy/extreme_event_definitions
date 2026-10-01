@@ -120,3 +120,20 @@ def test_submission_releases_locks_and_preserves_other_controller_updates(tmp_pa
     assert result['other_controller_evidence']=='preserve'
     assert result['tasks']['prepare']['job_id']=='12345'
     assert entries.count(('.submit.lock',))==3
+
+
+def test_ledger_previous_inode_remains_available(tmp_path):
+    shared=tmp_path/'shared';(shared/'runtime/completion_status').mkdir(parents=True)
+    pack=dict(campaign_identity='campaign',jobs=[])
+    ledger=dict(campaign_identity='campaign',preparation={'status':'verified'},tasks={})
+    ctl.save(shared,pack,ledger)
+    path=shared/'runtime/ledger.json'
+    with path.open() as old:
+        original=ctl.os.fstat(old.fileno()).st_ino
+        ledger['checked_at']='later'
+        ctl.save(shared,pack,ledger)
+        assert ctl.os.fstat(old.fileno()).st_nlink>=1
+        assert 'checked_at' not in json.load(old)
+    snapshots=list((shared/'runtime/ledger_history').glob('ledger-*.json'))
+    assert len(snapshots)==1 and snapshots[0].stat().st_ino==original
+    assert ct.read_json(path)['checked_at']=='later'

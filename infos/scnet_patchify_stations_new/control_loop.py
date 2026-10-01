@@ -63,7 +63,15 @@ def append(path, value):
 
 
 def save(shared, pack, ledger):
-    ct.atomic_json(shared / 'runtime/ledger.json', ledger)
+    path = shared / 'runtime/ledger.json'
+    history = shared / 'runtime/ledger_history'
+    history.mkdir(exist_ok=True)
+    if path.exists():
+        os.link(path, history / f'ledger-{time.time_ns():020d}-{uuid.uuid4().hex}.json')
+    ct.atomic_json(path, ledger)
+    retained = sorted(history.glob('ledger-*.json'))
+    for old in retained[:-128]:
+        old.unlink()
     dest = shared / 'runtime/completion_status/progress.md'
     tmp = ct.temporary(dest)
     tmp.write_text(progress.render(pack, ledger))
@@ -214,6 +222,14 @@ def reconcile(pack, shared, cycle):
             except (OSError, ValueError, KeyError) as exc:
                 state['reason'] = str(exc)
             result = classify(state, main, batch, receipt is not None)
+            tail = state['log_tail'].get('err', '').rstrip()
+            if (result == 'deterministic_failure' and state['attempt'] < 3
+                    and main and main['state'] == 'FAILED' and main['exit_code'] == '1:0'
+                    and 'ledger = ct.read_json(shared / "runtime/ledger.json")' in tail
+                    and tail.endswith('OSError: [Errno 5] Input/output error')
+                    and not (shared / 'attempts' / row['task_id'] / job).exists()):
+                result = 'retryable'
+                state['reason'] = 'Transient shared ledger read failure before any scientific output; bounded retry'
             if result == 'succeeded' and row['stage'] == 'prepare':
                 prepared_contract(ct.read_json(receipt['output']), pack)
                 gate = shared / 'runtime/prepared_assets_verified.json'
